@@ -36,12 +36,27 @@ const createSaleSchema = z.object({
 const querySchema = z.object({
   page:       z.coerce.number().min(1).default(1),
   limit:      z.coerce.number().min(1).max(100).default(20),
-  from:       z.string().optional(),   // ISO date
+  from:       z.string().optional(),
   to:         z.string().optional(),
   branch_id:  z.string().uuid().optional(),
   user_id:    z.string().uuid().optional(),
   status:     z.enum(['pending', 'completed', 'canceled', 'returned']).optional(),
 })
+
+// ─── Shared schema fragments ───────────────────────────────────────────────────
+const errorResponse = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    error: {
+      type: 'object',
+      properties: {
+        code: { type: 'string' },
+        message: { type: 'string' },
+      },
+    },
+  },
+}
 
 // ─── Helper: generar folio secuencial por tenant ───────────────────────────────
 async function generateFolio(tenantId: string): Promise<string> {
@@ -66,6 +81,47 @@ export async function salesRoutes(app: FastifyInstance) {
 
   // GET /sales
   app.get('/', {
+    schema: {
+      tags: ['Sales'],
+      summary: 'Listar ventas',
+      description: `Retorna la lista paginada de ventas del tenant.
+Los cajeros solo pueden ver sus propias ventas.`,
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          page: { type: 'integer', minimum: 1, default: 1 },
+          limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
+          from: { type: 'string', format: 'date-time', description: 'Fecha inicio (ISO 8601)' },
+          to: { type: 'string', format: 'date-time', description: 'Fecha fin (ISO 8601)' },
+          branch_id: { type: 'string', format: 'uuid' },
+          user_id: { type: 'string', format: 'uuid' },
+          status: {
+            type: 'string',
+            enum: ['pending', 'completed', 'canceled', 'returned'],
+          },
+        },
+      },
+      response: {
+        200: {
+          description: 'Lista de ventas',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: { type: 'array', items: { type: 'object' } },
+            meta: {
+              type: 'object',
+              properties: {
+                page: { type: 'integer' },
+                limit: { type: 'integer' },
+                total: { type: 'integer' },
+                totalPages: { type: 'integer' },
+              },
+            },
+          },
+        },
+      },
+    },
     preHandler: [authHook, requirePermission('sales', 'read')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -116,6 +172,47 @@ export async function salesRoutes(app: FastifyInstance) {
 
   // GET /sales/:id — detalle completo
   app.get('/:id', {
+    schema: {
+      tags: ['Sales'],
+      summary: 'Obtener venta por ID',
+      description: 'Retorna el detalle completo de una venta: items, pagos, cliente, cajero y sucursal.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      response: {
+        200: {
+          description: 'Detalle de la venta',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                folio: { type: 'string' },
+                status: { type: 'string' },
+                subtotal: { type: 'number' },
+                discount: { type: 'number' },
+                total: { type: 'number' },
+                notes: { type: 'string', nullable: true },
+                created_at: { type: 'string', format: 'date-time' },
+                items: { type: 'array', items: { type: 'object' } },
+                payments: { type: 'array', items: { type: 'object' } },
+                customer: { type: 'object', nullable: true },
+                user: { type: 'object' },
+                branch: { type: 'object' },
+              },
+            },
+          },
+        },
+        404: { description: 'Venta no encontrada', ...errorResponse },
+      },
+    },
     preHandler: [authHook, requirePermission('sales', 'read')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -150,6 +247,67 @@ export async function salesRoutes(app: FastifyInstance) {
 
   // POST /sales — crear venta
   app.post('/', {
+    schema: {
+      tags: ['Sales'],
+      summary: 'Crear venta',
+      description: `Registra una nueva venta y descuenta el stock automáticamente.
+Valida que los pagos cubran el total y que haya stock suficiente para cada producto.
+Si el cliente tiene asociado el campo customer_id, acumula puntos de lealtad (1 punto por cada $10).`,
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['branch_id', 'items', 'payments'],
+        properties: {
+          branch_id: { type: 'string', format: 'uuid' },
+          customer_id: { type: 'string', format: 'uuid', description: 'Opcional. Asocia la venta a un cliente.' },
+          discount: { type: 'number', minimum: 0, default: 0, description: 'Descuento global sobre el total' },
+          notes: { type: 'string' },
+          items: {
+            type: 'array',
+            minItems: 1,
+            items: {
+              type: 'object',
+              required: ['product_id', 'quantity', 'unit_price'],
+              properties: {
+                product_id: { type: 'string', format: 'uuid' },
+                quantity: { type: 'number', minimum: 0.001 },
+                unit_price: { type: 'number', minimum: 0 },
+                discount: { type: 'number', minimum: 0, default: 0 },
+              },
+            },
+          },
+          payments: {
+            type: 'array',
+            minItems: 1,
+            items: {
+              type: 'object',
+              required: ['method', 'amount'],
+              properties: {
+                method: { type: 'string', enum: ['cash', 'card', 'transfer', 'credit'] },
+                amount: { type: 'number', minimum: 0.01 },
+                change_given: { type: 'number', minimum: 0, default: 0 },
+                stripe_payment_id: { type: 'string' },
+                stripe_terminal_id: { type: 'string' },
+                card_last4: { type: 'string', minLength: 4, maxLength: 4 },
+                card_brand: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      response: {
+        201: {
+          description: 'Venta creada exitosamente',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: { type: 'object' },
+          },
+        },
+        400: { description: 'Stock insuficiente o datos inválidos', ...errorResponse },
+        403: { description: 'Feature no disponible en el plan', ...errorResponse },
+      },
+    },
     preHandler: [authHook, requirePermission('sales', 'create')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -310,6 +468,41 @@ export async function salesRoutes(app: FastifyInstance) {
 
   // POST /sales/:id/cancel — cancelar venta y revertir stock
   app.post('/:id/cancel', {
+    schema: {
+      tags: ['Sales'],
+      summary: 'Cancelar venta',
+      description:
+        'Cancela una venta completada y revierte el stock de todos los productos involucrados.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      body: {
+        type: 'object',
+        required: ['reason'],
+        properties: {
+          reason: { type: 'string', minLength: 1, description: 'Motivo de la cancelación' },
+        },
+      },
+      response: {
+        200: {
+          description: 'Venta cancelada y stock revertido',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { message: { type: 'string' } },
+            },
+          },
+        },
+        404: { description: 'Venta no encontrada o ya cancelada', ...errorResponse },
+      },
+    },
     preHandler: [authHook, requirePermission('sales', 'cancel')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -359,6 +552,38 @@ export async function salesRoutes(app: FastifyInstance) {
 
   // GET /sales/summary/today — resumen del día para dashboard
   app.get('/summary/today', {
+    schema: {
+      tags: ['Sales'],
+      summary: 'Resumen de ventas del día',
+      description: 'Retorna el total de ventas del día actual agrupado por método de pago. Útil para el dashboard del POS.',
+      security: [{ bearerAuth: [] }],
+      response: {
+        200: {
+          description: 'Resumen del día',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                totalSales: { type: 'integer', description: 'Número de ventas completadas hoy' },
+                totalAmount: { type: 'number', description: 'Monto total vendido hoy' },
+                byMethod: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      method: { type: 'string' },
+                      amount: { type: 'number' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     preHandler: [authHook, requirePermission('reports', 'view_sales')],
   }, async (req, res) => {
     const user = req.user as JwtPayload

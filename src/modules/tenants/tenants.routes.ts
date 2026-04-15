@@ -7,7 +7,21 @@ import { featureCache } from "../../lib/redis.js";
 import { env } from "../../config/env.js";
 import type { JwtPayload } from "../../types/index.js";
 
-const stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+const stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: "2026-03-25.dahlia" });
+
+const errorResponse = {
+  type: "object",
+  properties: {
+    success: { type: "boolean" },
+    error: {
+      type: "object",
+      properties: {
+        code: { type: "string" },
+        message: { type: "string" },
+      },
+    },
+  },
+};
 
 export async function subscriptionsRoutes(app: FastifyInstance) {
   const authHook = async (req: any, rep: any) => {
@@ -36,6 +50,71 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
   app.get(
     "/current",
     {
+      schema: {
+        tags: ["Subscriptions"],
+        summary: "Suscripción y plan actual",
+        description: `Retorna el estado de la suscripción activa del tenant, incluyendo:
+- Datos de la suscripción (estado, período, trial)
+- Detalles del plan (nombre, precio, límites)
+- Uso actual vs límites (usuarios y sucursales)
+- Features habilitados por el plan`,
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: {
+            description: "Suscripción actual",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  subscription: {
+                    type: "object",
+                    properties: {
+                      id: { type: "string" },
+                      status: { type: "string" },
+                      currentPeriodEnd: { type: "string", format: "date-time", nullable: true },
+                      trialEndsAt: { type: "string", format: "date-time", nullable: true },
+                      canceledAt: { type: "string", format: "date-time", nullable: true },
+                    },
+                  },
+                  plan: {
+                    type: "object",
+                    properties: {
+                      name: { type: "string" },
+                      code: { type: "string" },
+                      price_mxn: { type: "number" },
+                      max_users: { type: "integer" },
+                      max_branches: { type: "integer" },
+                      features: { type: "object", additionalProperties: { type: "string" } },
+                    },
+                  },
+                  usage: {
+                    type: "object",
+                    properties: {
+                      users: {
+                        type: "object",
+                        properties: {
+                          current: { type: "integer" },
+                          max: { type: "integer" },
+                        },
+                      },
+                      branches: {
+                        type: "object",
+                        properties: {
+                          current: { type: "integer" },
+                          max: { type: "integer" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: "Sin suscripción activa", ...errorResponse },
+        },
+      },
       preHandler: [authHook],
     },
     async (req, res) => {
@@ -101,7 +180,43 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
   );
 
   // GET /subscriptions/plans — listar todos los planes disponibles
-  app.get("/plans", async (req, res) => {
+  app.get("/plans", {
+    schema: {
+      tags: ["Subscriptions"],
+      summary: "Listar planes disponibles",
+      description: "Retorna todos los planes activos de la plataforma con sus precios, límites y features. No requiere autenticación.",
+      security: [],
+      response: {
+        200: {
+          description: "Lista de planes",
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            data: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  name: { type: "string" },
+                  code: { type: "string" },
+                  price_mxn: { type: "number" },
+                  billing_interval: { type: "string" },
+                  max_users: { type: "integer" },
+                  max_branches: { type: "integer" },
+                  trial_days: { type: "integer" },
+                  features: {
+                    type: "object",
+                    additionalProperties: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (_req, res) => {
     const plans = await prisma.plan.findMany({
       where: { is_active: true },
       include: { features: true },
@@ -130,6 +245,53 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
   app.post(
     "/checkout",
     {
+      schema: {
+        tags: ["Subscriptions"],
+        summary: "Crear sesión de pago (Stripe Checkout)",
+        description: `Crea una sesión de Stripe Checkout para suscribirse a un plan de pago.
+Solo el owner del tenant puede iniciar una suscripción.
+Retorna la URL a la que se debe redirigir al usuario para completar el pago.`,
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: "object",
+          required: ["plan_code", "success_url", "cancel_url"],
+          properties: {
+            plan_code: {
+              type: "string",
+              enum: ["pro", "enterprise"],
+              description: "Código del plan al que se desea suscribir",
+            },
+            success_url: {
+              type: "string",
+              format: "uri",
+              description: "URL de redirección al completar el pago",
+            },
+            cancel_url: {
+              type: "string",
+              format: "uri",
+              description: "URL de redirección si el usuario cancela",
+            },
+          },
+        },
+        response: {
+          200: {
+            description: "Sesión de Stripe Checkout creada",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  checkoutUrl: { type: "string", description: "URL de pago de Stripe" },
+                  sessionId: { type: "string" },
+                },
+              },
+            },
+          },
+          403: { description: "Solo el owner puede gestionar suscripciones", ...errorResponse },
+          404: { description: "Plan no encontrado", ...errorResponse },
+        },
+      },
       preHandler: [authHook, ownerOnly],
     },
     async (req, res) => {
@@ -172,7 +334,6 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       }
 
       // Crear sesión de Checkout de Stripe
-      // En producción, agrega el price_id real de Stripe Dashboard
       const session = await stripe.checkout.sessions.create({
         customer: customerId,
         mode: "subscription",
@@ -183,7 +344,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
               product_data: { name: `POS Abarrotes — Plan ${plan.name}` },
               unit_amount: Math.round(Number(plan.price_mxn) * 100),
               recurring: {
-                interval: plan.billing_interval as "month" | "year",
+                interval: plan.billing_interval === "monthly" ? "month" : "year",
               },
             },
             quantity: 1,
@@ -208,6 +369,42 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
   app.post(
     "/portal",
     {
+      schema: {
+        tags: ["Subscriptions"],
+        summary: "Abrir portal de facturación (Stripe)",
+        description: `Crea una sesión del portal de facturación de Stripe donde el cliente puede:
+gestionar su suscripción, actualizar método de pago, descargar facturas, etc.
+Solo el owner del tenant puede acceder.`,
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: "object",
+          required: ["return_url"],
+          properties: {
+            return_url: {
+              type: "string",
+              format: "uri",
+              description: "URL a la que se redirige al salir del portal",
+            },
+          },
+        },
+        response: {
+          200: {
+            description: "URL del portal de Stripe generada",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  portalUrl: { type: "string", description: "URL del portal de Stripe" },
+                },
+              },
+            },
+          },
+          400: { description: "Sin suscripción de Stripe activa", ...errorResponse },
+          403: { description: "Solo el owner puede gestionar suscripciones", ...errorResponse },
+        },
+      },
       preHandler: [authHook, ownerOnly],
     },
     async (req, res) => {
@@ -243,6 +440,37 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
   app.post(
     "/cancel",
     {
+      schema: {
+        tags: ["Subscriptions"],
+        summary: "Cancelar suscripción",
+        description: `Programa la cancelación de la suscripción al final del período de facturación actual.
+El servicio sigue activo hasta la fecha de vencimiento.
+Solo el owner puede cancelar.`,
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: {
+            description: "Cancelación programada exitosamente",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  message: { type: "string" },
+                  endsAt: {
+                    type: "string",
+                    format: "date-time",
+                    nullable: true,
+                    description: "Fecha en que se desactivará el servicio",
+                  },
+                },
+              },
+            },
+          },
+          400: { description: "Sin suscripción activa para cancelar", ...errorResponse },
+          403: { description: "Solo el owner puede gestionar suscripciones", ...errorResponse },
+        },
+      },
       preHandler: [authHook, ownerOnly],
     },
     async (req, res) => {

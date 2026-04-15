@@ -23,6 +23,34 @@ const querySchema = z.object({
   sortOrder: z.enum(['asc', 'desc']).default('asc'),
 })
 
+// ─── Shared schema fragments ───────────────────────────────────────────────────
+const supplierProperties = {
+  id: { type: 'string' },
+  name: { type: 'string' },
+  contact_name: { type: 'string', nullable: true },
+  phone: { type: 'string', nullable: true },
+  email: { type: 'string', nullable: true },
+  rfc: { type: 'string', nullable: true },
+  address: { type: 'string', nullable: true },
+  notes: { type: 'string', nullable: true },
+  is_active: { type: 'boolean' },
+  created_at: { type: 'string', format: 'date-time' },
+}
+
+const errorResponse = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    error: {
+      type: 'object',
+      properties: {
+        code: { type: 'string' },
+        message: { type: 'string' },
+      },
+    },
+  },
+}
+
 export async function suppliersRoutes(app: FastifyInstance) {
   const authHook = async (req: any, rep: any) => {
     try { await req.jwtVerify() } catch { return rep.code(401).send() }
@@ -33,6 +61,48 @@ export async function suppliersRoutes(app: FastifyInstance) {
 
   // GET /suppliers
   app.get('/', {
+    schema: {
+      tags: ['Suppliers'],
+      summary: 'Listar proveedores',
+      description:
+        'Retorna la lista paginada de proveedores activos del tenant. Requiere el feature `suppliers` en el plan.',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          page: { type: 'integer', minimum: 1, default: 1 },
+          limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
+          search: {
+            type: 'string',
+            description: 'Buscar por nombre, nombre de contacto o RFC',
+          },
+          sortBy: { type: 'string', enum: ['name', 'created_at'], default: 'name' },
+          sortOrder: { type: 'string', enum: ['asc', 'desc'], default: 'asc' },
+        },
+      },
+      response: {
+        200: {
+          description: 'Lista de proveedores',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'array',
+              items: { type: 'object', properties: supplierProperties },
+            },
+            meta: {
+              type: 'object',
+              properties: {
+                page: { type: 'integer' },
+                limit: { type: 'integer' },
+                total: { type: 'integer' },
+                totalPages: { type: 'integer' },
+              },
+            },
+          },
+        },
+      },
+    },
     preHandler: [authHook, featureHook, requirePermission('suppliers', 'read')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -69,6 +139,38 @@ export async function suppliersRoutes(app: FastifyInstance) {
 
   // GET /suppliers/:id
   app.get('/:id', {
+    schema: {
+      tags: ['Suppliers'],
+      summary: 'Obtener proveedor por ID',
+      description:
+        'Retorna el detalle del proveedor con los primeros 20 productos activos asociados y sus últimas 10 órdenes de compra.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      response: {
+        200: {
+          description: 'Detalle del proveedor',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                ...supplierProperties,
+                products: { type: 'array', items: { type: 'object' } },
+                purchase_orders: { type: 'array', items: { type: 'object' } },
+              },
+            },
+          },
+        },
+        404: { description: 'Proveedor no encontrado', ...errorResponse },
+      },
+    },
     preHandler: [authHook, featureHook, requirePermission('suppliers', 'read')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -104,6 +206,35 @@ export async function suppliersRoutes(app: FastifyInstance) {
 
   // POST /suppliers
   app.post('/', {
+    schema: {
+      tags: ['Suppliers'],
+      summary: 'Crear proveedor',
+      description: 'Registra un nuevo proveedor en el tenant.',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['name'],
+        properties: {
+          name: { type: 'string', minLength: 1, maxLength: 200 },
+          contact_name: { type: 'string', maxLength: 200 },
+          phone: { type: 'string', maxLength: 30 },
+          email: { type: 'string', format: 'email' },
+          rfc: { type: 'string', maxLength: 13 },
+          address: { type: 'string' },
+          notes: { type: 'string' },
+        },
+      },
+      response: {
+        201: {
+          description: 'Proveedor creado exitosamente',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: { type: 'object', properties: supplierProperties },
+          },
+        },
+      },
+    },
     preHandler: [authHook, featureHook, requirePermission('suppliers', 'create')],
   }, async (req, res) => {
     const user  = req.user as JwtPayload
@@ -118,6 +249,42 @@ export async function suppliersRoutes(app: FastifyInstance) {
 
   // PUT /suppliers/:id
   app.put('/:id', {
+    schema: {
+      tags: ['Suppliers'],
+      summary: 'Actualizar proveedor',
+      description: 'Actualiza parcialmente los datos de un proveedor.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      body: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', minLength: 1, maxLength: 200 },
+          contact_name: { type: 'string', maxLength: 200 },
+          phone: { type: 'string', maxLength: 30 },
+          email: { type: 'string', format: 'email' },
+          rfc: { type: 'string', maxLength: 13 },
+          address: { type: 'string' },
+          notes: { type: 'string' },
+        },
+      },
+      response: {
+        200: {
+          description: 'Proveedor actualizado',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: { type: 'object', properties: supplierProperties },
+          },
+        },
+        404: { description: 'Proveedor no encontrado', ...errorResponse },
+      },
+    },
     preHandler: [authHook, featureHook, requirePermission('suppliers', 'update')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -143,6 +310,33 @@ export async function suppliersRoutes(app: FastifyInstance) {
 
   // DELETE /suppliers/:id — soft delete
   app.delete('/:id', {
+    schema: {
+      tags: ['Suppliers'],
+      summary: 'Desactivar proveedor',
+      description: 'Realiza un soft delete del proveedor (is_active = false).',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      response: {
+        200: {
+          description: 'Proveedor desactivado',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { message: { type: 'string' } },
+            },
+          },
+        },
+        404: { description: 'Proveedor no encontrado', ...errorResponse },
+      },
+    },
     preHandler: [authHook, featureHook, requirePermission('suppliers', 'delete')],
   }, async (req, res) => {
     const user = req.user as JwtPayload

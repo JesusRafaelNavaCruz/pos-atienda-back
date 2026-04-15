@@ -35,6 +35,37 @@ const querySchema = z.object({
   sortOrder: z.enum(["asc", "desc"]).default("asc"),
 });
 
+// ─── Shared schema fragments ───────────────────────────────────────────────────
+const productProperties = {
+  id: { type: "string" },
+  barcode: { type: "string", nullable: true },
+  sku: { type: "string", nullable: true },
+  name: { type: "string" },
+  description: { type: "string", nullable: true },
+  unit: { type: "string" },
+  price: { type: "number" },
+  cost: { type: "number" },
+  stock: { type: "number" },
+  min_stock: { type: "number" },
+  sold_by_weight: { type: "boolean" },
+  is_active: { type: "boolean" },
+  created_at: { type: "string", format: "date-time" },
+};
+
+const errorResponse = {
+  type: "object",
+  properties: {
+    success: { type: "boolean" },
+    error: {
+      type: "object",
+      properties: {
+        code: { type: "string" },
+        message: { type: "string" },
+      },
+    },
+  },
+};
+
 export async function productsRoutes(app: FastifyInstance) {
   const authHook = async (req: any, rep: any) => {
     try {
@@ -48,6 +79,49 @@ export async function productsRoutes(app: FastifyInstance) {
   app.get(
     "/",
     {
+      schema: {
+        tags: ["Products"],
+        summary: "Listar productos",
+        description:
+          "Retorna la lista paginada de productos del tenant. Permite filtrar por nombre/barcode/sku, categoría y stock bajo.",
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: "object",
+          properties: {
+            page: { type: "integer", minimum: 1, default: 1 },
+            limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+            search: { type: "string", description: "Buscar por nombre, barcode o SKU" },
+            category_id: { type: "string", format: "uuid" },
+            low_stock: { type: "boolean", description: "Filtrar productos con stock bajo" },
+            is_active: { type: "boolean", default: true },
+            sortBy: {
+              type: "string",
+              enum: ["name", "price", "stock", "created_at"],
+              default: "name",
+            },
+            sortOrder: { type: "string", enum: ["asc", "desc"], default: "asc" },
+          },
+        },
+        response: {
+          200: {
+            description: "Lista de productos",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: { type: "array", items: { type: "object", properties: productProperties } },
+              meta: {
+                type: "object",
+                properties: {
+                  page: { type: "integer" },
+                  limit: { type: "integer" },
+                  total: { type: "integer" },
+                  totalPages: { type: "integer" },
+                },
+              },
+            },
+          },
+        },
+      },
       preHandler: [authHook, requirePermission("products", "read")],
     },
     async (req, res) => {
@@ -116,6 +190,23 @@ export async function productsRoutes(app: FastifyInstance) {
   app.get(
     "/low-stock",
     {
+      schema: {
+        tags: ["Products"],
+        summary: "Productos con stock bajo",
+        description:
+          "Retorna todos los productos cuyo stock actual es menor o igual al stock mínimo configurado.",
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: {
+            description: "Productos con stock bajo",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: { type: "array", items: { type: "object" } },
+            },
+          },
+        },
+      },
       preHandler: [authHook, requirePermission("products", "read")],
     },
     async (req, res) => {
@@ -137,6 +228,31 @@ export async function productsRoutes(app: FastifyInstance) {
   app.get(
     "/:id",
     {
+      schema: {
+        tags: ["Products"],
+        summary: "Obtener producto por ID",
+        description:
+          "Retorna el detalle completo de un producto, incluyendo categoría, proveedor y los últimos 10 movimientos de inventario.",
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: {
+            id: { type: "string", format: "uuid" },
+          },
+        },
+        response: {
+          200: {
+            description: "Detalle del producto",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: { type: "object", properties: productProperties },
+            },
+          },
+          404: { description: "Producto no encontrado", ...errorResponse },
+        },
+      },
       preHandler: [authHook, requirePermission("products", "read")],
     },
     async (req, res) => {
@@ -173,6 +289,31 @@ export async function productsRoutes(app: FastifyInstance) {
   app.get(
     "/barcode/:barcode",
     {
+      schema: {
+        tags: ["Products"],
+        summary: "Buscar producto por código de barras",
+        description:
+          "Busca un producto activo por su código de barras. Útil para el escáner del POS.",
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: "object",
+          required: ["barcode"],
+          properties: {
+            barcode: { type: "string", description: "Código de barras del producto" },
+          },
+        },
+        response: {
+          200: {
+            description: "Producto encontrado",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: { type: "object", properties: productProperties },
+            },
+          },
+          404: { description: "Producto no encontrado", ...errorResponse },
+        },
+      },
       preHandler: [authHook],
     },
     async (req, res) => {
@@ -204,17 +345,57 @@ export async function productsRoutes(app: FastifyInstance) {
 
   // POST /products
   app.post('/', {
+    schema: {
+      tags: ["Products"],
+      summary: "Crear producto",
+      description: "Crea un nuevo producto en el catálogo del tenant.",
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: "object",
+        required: ["name", "price"],
+        properties: {
+          barcode: { type: "string", maxLength: 100 },
+          sku: { type: "string", maxLength: 100 },
+          name: { type: "string", minLength: 1, maxLength: 300 },
+          description: { type: "string" },
+          unit: {
+            type: "string",
+            enum: ["pza", "kg", "g", "lt", "ml", "caja", "paq", "rollo", "par"],
+            default: "pza",
+          },
+          price: { type: "number", minimum: 0 },
+          cost: { type: "number", minimum: 0, default: 0 },
+          stock: { type: "number", default: 0 },
+          min_stock: { type: "number", default: 0 },
+          sold_by_weight: { type: "boolean", default: false },
+          category_id: { type: "string", format: "uuid" },
+          supplier_id: { type: "string", format: "uuid" },
+          image_url: { type: "string", format: "uri" },
+        },
+      },
+      response: {
+        201: {
+          description: "Producto creado exitosamente",
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            data: { type: "object", properties: productProperties },
+          },
+        },
+        409: { description: "Código de barras ya registrado", ...errorResponse },
+      },
+    },
     preHandler: [authHook, requirePermission('products', 'create')]
   }, async (req, res) => {
-    
+
     const user = req.user as JwtPayload;
     const body = productSchema.parse(req.body)
 
     if (body.barcode) {
-      const exist = await tenantStorage.run(user.tenantId, () => 
+      const exist = await tenantStorage.run(user.tenantId, () =>
         prisma.product.findFirst({
           where: { barcode: body.barcode, tenant_id: user.tenantId }
-        })      
+        })
       )
       if (exist) {
         return res.code(409).send({
@@ -224,7 +405,7 @@ export async function productsRoutes(app: FastifyInstance) {
       }
     }
 
-    const product = await tenantStorage.run(user.tenantId, () => 
+    const product = await tenantStorage.run(user.tenantId, () =>
       prisma.product.create({
         data: { ...body, tenant_id: user.tenantId}
       })
@@ -235,6 +416,51 @@ export async function productsRoutes(app: FastifyInstance) {
 
   // PUT /products/:id
   app.put('/:id', {
+    schema: {
+      tags: ["Products"],
+      summary: "Actualizar producto",
+      description: "Actualiza parcialmente los campos de un producto existente.",
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: "object",
+        required: ["id"],
+        properties: {
+          id: { type: "string", format: "uuid" },
+        },
+      },
+      body: {
+        type: "object",
+        properties: {
+          barcode: { type: "string", maxLength: 100 },
+          sku: { type: "string", maxLength: 100 },
+          name: { type: "string", minLength: 1, maxLength: 300 },
+          description: { type: "string" },
+          unit: {
+            type: "string",
+            enum: ["pza", "kg", "g", "lt", "ml", "caja", "paq", "rollo", "par"],
+          },
+          price: { type: "number", minimum: 0 },
+          cost: { type: "number", minimum: 0 },
+          stock: { type: "number" },
+          min_stock: { type: "number" },
+          sold_by_weight: { type: "boolean" },
+          category_id: { type: "string", format: "uuid" },
+          supplier_id: { type: "string", format: "uuid" },
+          image_url: { type: "string", format: "uri" },
+        },
+      },
+      response: {
+        200: {
+          description: "Producto actualizado",
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            data: { type: "object", properties: productProperties },
+          },
+        },
+        404: { description: "Producto no encontrado", ...errorResponse },
+      },
+    },
     preHandler: [authHook, requirePermission('products', 'read')]
   }, async (req, res) => {
 
@@ -257,11 +483,38 @@ export async function productsRoutes(app: FastifyInstance) {
       prisma.product.update({ where: { id }, data: body }),
     )
 
-    return res.send({ success: true, data: product })    
+    return res.send({ success: true, data: product })
   })
 
   // DELETE /products/:id
   app.delete('/:id', {
+    schema: {
+      tags: ["Products"],
+      summary: "Desactivar producto",
+      description: "Realiza un soft delete del producto (is_active = false). No elimina el registro.",
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: "object",
+        required: ["id"],
+        properties: {
+          id: { type: "string", format: "uuid" },
+        },
+      },
+      response: {
+        200: {
+          description: "Producto desactivado",
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            data: {
+              type: "object",
+              properties: { message: { type: "string" } },
+            },
+          },
+        },
+        404: { description: "Producto no encontrado", ...errorResponse },
+      },
+    },
     preHandler: [authHook, requirePermission('products', 'delete')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -283,10 +536,41 @@ export async function productsRoutes(app: FastifyInstance) {
     )
 
     return res.send({ success: true, data: { message: 'Producto desactivado' } })
-  }) 
+  })
 
   // POST /products/import/csv
-    app.post('/import/csv', {
+  app.post('/import/csv', {
+    schema: {
+      tags: ["Products"],
+      summary: "Importar productos desde CSV",
+      description: `Importa productos masivamente desde un archivo CSV (multipart/form-data).
+**Columnas requeridas:** \`name\`, \`price\`
+
+**Columnas opcionales:** \`barcode\`, \`sku\`, \`cost\`, \`stock\`, \`min_stock\`, \`unit\`, \`description\`, \`sold_by_weight\`
+
+Si un producto ya existe (por barcode), se actualiza. Requiere el feature \`csv_import\` en el plan.`,
+      security: [{ bearerAuth: [] }],
+      consumes: ["multipart/form-data"],
+      response: {
+        200: {
+          description: "Importación completada",
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            data: {
+              type: "object",
+              properties: {
+                message: { type: "string" },
+                created: { type: "integer" },
+                updated: { type: "integer" },
+                errors: { type: "array", items: { type: "string" } },
+              },
+            },
+          },
+        },
+        400: { description: "Archivo inválido o columnas faltantes", ...errorResponse },
+      },
+    },
     preHandler: [
       authHook,
       requirePermission('inventory', 'import'),

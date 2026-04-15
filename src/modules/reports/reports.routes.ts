@@ -14,6 +14,25 @@ const dateRangeSchema = z.object({
   branch_id: z.string().uuid().optional(),
 });
 
+// ─── Shared querystring for date range ────────────────────────────────────────
+const dateRangeQuerystring = {
+  type: "object",
+  required: ["from", "to"],
+  properties: {
+    from: {
+      type: "string",
+      format: "date-time",
+      description: "Fecha inicio en ISO 8601 (ej. 2024-01-01T00:00:00Z)",
+    },
+    to: {
+      type: "string",
+      format: "date-time",
+      description: "Fecha fin en ISO 8601 (ej. 2024-01-31T23:59:59Z)",
+    },
+    branch_id: { type: "string", format: "uuid", description: "Filtrar por sucursal" },
+  },
+};
+
 export async function reportsRoutes(app: FastifyInstance) {
   const authHook = async (req: any, rep: any) => {
     try {
@@ -27,6 +46,51 @@ export async function reportsRoutes(app: FastifyInstance) {
   app.get(
     "/dashboard",
     {
+      schema: {
+        tags: ["Reports"],
+        summary: "Dashboard principal",
+        description: `Retorna métricas clave para el dashboard:
+- Ventas de hoy vs ayer (con % de crecimiento)
+- Ventas del mes vs mes anterior
+- Conteo de productos con stock bajo
+- Top 5 productos más vendidos hoy
+- Desglose de ventas de hoy por método de pago`,
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: {
+            description: "Métricas del dashboard",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  today: {
+                    type: "object",
+                    properties: {
+                      sales: { type: "integer" },
+                      amount: { type: "number" },
+                      growthVsYesterday: { type: "number", nullable: true },
+                    },
+                  },
+                  month: {
+                    type: "object",
+                    properties: {
+                      sales: { type: "integer" },
+                      amount: { type: "number" },
+                      discount: { type: "number" },
+                      growthVsLastMonth: { type: "number", nullable: true },
+                    },
+                  },
+                  lowStockCount: { type: "integer" },
+                  topProducts: { type: "array", items: { type: "object" } },
+                  paymentMethods: { type: "array", items: { type: "object" } },
+                },
+              },
+            },
+          },
+        },
+      },
       preHandler: [authHook, requirePermission("reports", "view_sales")],
     },
     async (request, reply) => {
@@ -195,6 +259,55 @@ export async function reportsRoutes(app: FastifyInstance) {
   app.get(
     "/sales",
     {
+      schema: {
+        tags: ["Reports"],
+        summary: "Reporte de ventas por período",
+        description: `Retorna el análisis completo de ventas en un rango de fechas:
+- Resumen total (ventas, ingresos, descuentos, ticket promedio)
+- Ventas agrupadas por día
+- Desglose por método de pago
+- Top 10 cajeros por ventas
+
+Los cajeros solo pueden ver sus propias ventas.`,
+        security: [{ bearerAuth: [] }],
+        querystring: dateRangeQuerystring,
+        response: {
+          200: {
+            description: "Reporte de ventas",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  summary: {
+                    type: "object",
+                    properties: {
+                      totalSales: { type: "integer" },
+                      totalRevenue: { type: "number" },
+                      totalDiscount: { type: "number" },
+                      avgTicket: { type: "number" },
+                    },
+                  },
+                  byDay: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        day: { type: "string" },
+                        sales: { type: "integer" },
+                        total: { type: "number" },
+                      },
+                    },
+                  },
+                  byPaymentMethod: { type: "array", items: { type: "object" } },
+                  byCashier: { type: "array", items: { type: "object" } },
+                },
+              },
+            },
+          },
+        },
+      },
       preHandler: [authHook, requirePermission("reports", "view_sales")],
     },
     async (request, reply) => {
@@ -305,6 +418,49 @@ export async function reportsRoutes(app: FastifyInstance) {
   app.get(
     "/products",
     {
+      schema: {
+        tags: ["Reports"],
+        summary: "Productos más vendidos",
+        description: `Retorna los productos más vendidos en el período con cálculo de rentabilidad.
+Incluye: ingresos, costo, utilidad bruta y margen por producto.
+Requiere el feature \`advanced_reports\` en el plan.`,
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          ...dateRangeQuerystring,
+          properties: {
+            ...dateRangeQuerystring.properties,
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 50,
+              default: 20,
+              description: "Cantidad de productos a retornar",
+            },
+          },
+        },
+        response: {
+          200: {
+            description: "Productos más vendidos con rentabilidad",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    product: { type: "object" },
+                    quantity: { type: "number" },
+                    revenue: { type: "number" },
+                    profit: { type: "number" },
+                    margin: { type: "number", description: "Margen bruto en %" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       preHandler: [
         authHook,
         requirePermission("reports", "view_sales"),
@@ -375,6 +531,51 @@ export async function reportsRoutes(app: FastifyInstance) {
   app.get(
     "/cash-cut",
     {
+      schema: {
+        tags: ["Reports"],
+        summary: "Corte de caja (Z-report)",
+        description: `Genera el corte de caja para un período y sucursal.
+Incluye: total de ventas, ingresos, descuentos, cancelaciones, efectivo en caja y desglose por método de pago.`,
+        security: [{ bearerAuth: [] }],
+        querystring: dateRangeQuerystring,
+        response: {
+          200: {
+            description: "Corte de caja",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  period: { type: "object" },
+                  branch_id: { type: "string", nullable: true },
+                  totalSales: { type: "integer" },
+                  totalRevenue: { type: "number" },
+                  totalDiscount: { type: "number" },
+                  totalCancellations: { type: "integer" },
+                  cashInDrawer: {
+                    type: "number",
+                    description: "Efectivo en caja (cobrado menos cambio entregado)",
+                  },
+                  byPaymentMethod: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        method: { type: "string" },
+                        received: { type: "number" },
+                        change: { type: "number" },
+                        net: { type: "number" },
+                      },
+                    },
+                  },
+                  generatedAt: { type: "string", format: "date-time" },
+                },
+              },
+            },
+          },
+        },
+      },
       preHandler: [authHook, requirePermission("reports", "view_sales")],
     },
     async (request, reply) => {
@@ -444,6 +645,54 @@ export async function reportsRoutes(app: FastifyInstance) {
   app.get(
     "/inventory-value",
     {
+      schema: {
+        tags: ["Reports"],
+        summary: "Valoración del inventario",
+        description: `Calcula el valor total del inventario activo en costo y precio de venta.
+Retorna por producto: stock, costo unitario, precio de venta, valor total en costo, valor total en venta y utilidad potencial.
+Requiere el feature \`advanced_reports\` en el plan.`,
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: {
+            description: "Valoración del inventario",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  items: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        id: { type: "string" },
+                        name: { type: "string" },
+                        barcode: { type: "string", nullable: true },
+                        stock: { type: "number" },
+                        cost: { type: "number" },
+                        price: { type: "number" },
+                        totalCostValue: { type: "number" },
+                        totalSaleValue: { type: "number" },
+                        potentialProfit: { type: "number" },
+                        category: { type: "object", nullable: true },
+                      },
+                    },
+                  },
+                  totals: {
+                    type: "object",
+                    properties: {
+                      totalCostValue: { type: "number" },
+                      totalSaleValue: { type: "number" },
+                      potentialProfit: { type: "number" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       preHandler: [
         authHook,
         requirePermission("reports", "view_finance"),

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npm show:*)",
+      "Bash(node -e \"const s = require\\('stripe'\\); console.log\\(s.PACKAGE_VERSION || 'check types'\\)\")",
+      "Bash(node -e \"const Stripe = require\\('stripe'\\); const s = new Stripe\\('sk_test_x'\\); console.log\\(s.getApiField ? 'has getApiField' : 'no'\\); console.log\\(Stripe.LATEST_API_VERSION || 'not found'\\)\")",
+      "Bash(node -e \"const Stripe = require\\('stripe'\\); const s = new Stripe\\('sk_test_x'\\); console.log\\(s._api?.version || s.getApiField?.\\('version'\\) || 'unknown'\\)\")",
+      "Bash(npx tsc:*)",
+      "Bash(node -e ':*)",
+      "Bash(xargs grep:*)"
+    ]
+  }
+}

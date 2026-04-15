@@ -21,6 +21,7 @@ export function requireFeature(featureKey: FeatureKey) {
             in: ["active", "trialing"],
           },
         },
+        orderBy: { created_at: "desc" }, // la suscripción más reciente (plan upgrade)
         include: {
           plan: {
             include: {
@@ -94,7 +95,7 @@ export function requirePermission(resource: string, action: string) {
     }
 
     const hasPermission = role.permissions.some(
-      (rp) => rp.permission.resource === resource && rp.permission.action
+      (rp) => rp.permission.resource === resource && rp.permission.action === action
     )
 
     if (!hasPermission) {

@@ -23,6 +23,35 @@ const querySchema = z.object({
   sortOrder: z.enum(["asc", "desc"]).default("asc"),
 });
 
+// ─── Shared schema fragments ───────────────────────────────────────────────────
+const customerProperties = {
+  id: { type: "string" },
+  name: { type: "string" },
+  phone: { type: "string", nullable: true },
+  email: { type: "string", nullable: true },
+  rfc: { type: "string", nullable: true },
+  address: { type: "string", nullable: true },
+  credit_limit: { type: "number" },
+  loyalty_points: { type: "integer" },
+  is_active: { type: "boolean" },
+  notes: { type: "string", nullable: true },
+  created_at: { type: "string", format: "date-time" },
+};
+
+const errorResponse = {
+  type: "object",
+  properties: {
+    success: { type: "boolean" },
+    error: {
+      type: "object",
+      properties: {
+        code: { type: "string" },
+        message: { type: "string" },
+      },
+    },
+  },
+};
+
 export async function customerRoutes(app: FastifyInstance) {
   const authHook = async (req: any, res: any) => {
     try {
@@ -38,6 +67,52 @@ export async function customerRoutes(app: FastifyInstance) {
   app.get(
     "/",
     {
+      schema: {
+        tags: ["Customers"],
+        summary: "Listar clientes",
+        description:
+          "Retorna la lista paginada de clientes activos del tenant. Requiere el feature `customers` en el plan.",
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: "object",
+          properties: {
+            page: { type: "integer", minimum: 1, default: 1 },
+            limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+            search: {
+              type: "string",
+              description: "Buscar por nombre, teléfono, RFC o email",
+            },
+            sortBy: {
+              type: "string",
+              enum: ["name", "created_at", "loyalty_points"],
+              default: "name",
+            },
+            sortOrder: { type: "string", enum: ["asc", "desc"], default: "asc" },
+          },
+        },
+        response: {
+          200: {
+            description: "Lista de clientes",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "array",
+                items: { type: "object", properties: customerProperties },
+              },
+              meta: {
+                type: "object",
+                properties: {
+                  page: { type: "integer" },
+                  limit: { type: "integer" },
+                  total: { type: "integer" },
+                  totalPages: { type: "integer" },
+                },
+              },
+            },
+          },
+        },
+      },
       preHandler: [
         authHook,
         featureHook,
@@ -99,6 +174,44 @@ export async function customerRoutes(app: FastifyInstance) {
   app.get(
     "/:id",
     {
+      schema: {
+        tags: ["Customers"],
+        summary: "Obtener cliente por ID",
+        description:
+          "Retorna el detalle del cliente incluyendo sus últimas 10 compras completadas y estadísticas de gasto total.",
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: {
+            id: { type: "string", format: "uuid" },
+          },
+        },
+        response: {
+          200: {
+            description: "Detalle del cliente con historial",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  ...customerProperties,
+                  sales: { type: "array", items: { type: "object" } },
+                  stats: {
+                    type: "object",
+                    properties: {
+                      totalPurchases: { type: "integer" },
+                      totalSpent: { type: "number" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: "Cliente no encontrado", ...errorResponse },
+        },
+      },
       preHandler: [
         authHook,
         featureHook,
@@ -168,6 +281,35 @@ export async function customerRoutes(app: FastifyInstance) {
   app.post(
     "/",
     {
+      schema: {
+        tags: ["Customers"],
+        summary: "Crear cliente",
+        description: "Registra un nuevo cliente en el tenant.",
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: "object",
+          required: ["name"],
+          properties: {
+            name: { type: "string", minLength: 1, maxLength: 150 },
+            phone: { type: "string", maxLength: 30 },
+            email: { type: "string", format: "email" },
+            rfc: { type: "string", maxLength: 13 },
+            address: { type: "string" },
+            credit_limit: { type: "number", minimum: 0, default: 0 },
+            notes: { type: "string" },
+          },
+        },
+        response: {
+          201: {
+            description: "Cliente creado exitosamente",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: { type: "object", properties: customerProperties },
+            },
+          },
+        },
+      },
       preHandler: [
         authHook,
         featureHook,
@@ -186,10 +328,46 @@ export async function customerRoutes(app: FastifyInstance) {
     },
   );
 
-  // PUT /customer/:id
+  // PUT /customers/:id
   app.put(
     "/:id",
     {
+      schema: {
+        tags: ["Customers"],
+        summary: "Actualizar cliente",
+        description: "Actualiza parcialmente los datos de un cliente.",
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: {
+            id: { type: "string", format: "uuid" },
+          },
+        },
+        body: {
+          type: "object",
+          properties: {
+            name: { type: "string", minLength: 1, maxLength: 150 },
+            phone: { type: "string", maxLength: 30 },
+            email: { type: "string", format: "email" },
+            rfc: { type: "string", maxLength: 13 },
+            address: { type: "string" },
+            credit_limit: { type: "number", minimum: 0 },
+            notes: { type: "string" },
+          },
+        },
+        response: {
+          200: {
+            description: "Cliente actualizado",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: { type: "object", properties: customerProperties },
+            },
+          },
+          404: { description: "Cliente no encontrado", ...errorResponse },
+        },
+      },
       preHandler: [
         authHook,
         featureHook,
@@ -223,10 +401,38 @@ export async function customerRoutes(app: FastifyInstance) {
     },
   );
 
-  // DELETE /customer/:id
+  // DELETE /customers/:id
   app.delete(
-    "/",
+    "/:id",
     {
+      schema: {
+        tags: ["Customers"],
+        summary: "Desactivar cliente",
+        description:
+          "Realiza un soft delete del cliente (is_active = false).",
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: {
+            id: { type: "string", format: "uuid" },
+          },
+        },
+        response: {
+          200: {
+            description: "Cliente desactivado",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: { message: { type: "string" } },
+              },
+            },
+          },
+          404: { description: "Cliente no encontrado", ...errorResponse },
+        },
+      },
       preHandler: [
         authHook,
         featureHook,
@@ -237,9 +443,9 @@ export async function customerRoutes(app: FastifyInstance) {
 
         const user = req.user as JwtPayload;
         const { id } = req.params as { id: string };
-        
-        const existing = await tenantStorage.run(user.tenantId, () => 
-            prisma.customer.findFirst({ where: { id, tenant_id: user.tenantId } })        
+
+        const existing = await tenantStorage.run(user.tenantId, () =>
+            prisma.customer.findFirst({ where: { id, tenant_id: user.tenantId } })
         )
 
         if (!existing) {
@@ -252,7 +458,7 @@ export async function customerRoutes(app: FastifyInstance) {
             })
         }
 
-        await tenantStorage.run(user.tenantId, () => 
+        await tenantStorage.run(user.tenantId, () =>
             prisma.customer.update({ where: { id }, data: { is_active: false } })
         )
 
@@ -267,6 +473,50 @@ export async function customerRoutes(app: FastifyInstance) {
 
   // POST /customers/:id/redeem
   app.post('/:id/redeem', {
+    schema: {
+      tags: ["Customers"],
+      summary: "Canjear puntos de lealtad",
+      description:
+        "Descuenta puntos de lealtad del cliente. Cada punto equivale a $1 MXN de descuento.",
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: "object",
+        required: ["id"],
+        properties: {
+          id: { type: "string", format: "uuid" },
+        },
+      },
+      body: {
+        type: "object",
+        required: ["points"],
+        properties: {
+          points: {
+            type: "integer",
+            minimum: 1,
+            description: "Cantidad de puntos a canjear",
+          },
+        },
+      },
+      response: {
+        200: {
+          description: "Puntos canjeados exitosamente",
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            data: {
+              type: "object",
+              properties: {
+                pointsRedeemed: { type: "integer" },
+                remainingPoints: { type: "integer" },
+                discountValue: { type: "number" },
+              },
+            },
+          },
+        },
+        400: { description: "Puntos insuficientes", ...errorResponse },
+        404: { description: "Cliente no encontrado", ...errorResponse },
+      },
+    },
     preHandler: [authHook, featureHook, requirePermission('customers', 'update')]
   }, async (req, res) => {
 
@@ -276,7 +526,7 @@ export async function customerRoutes(app: FastifyInstance) {
         points: z.number().int().positive()
     }).parse(req.body);
 
-    const customer = await tenantStorage.run(user.tenantId, () => 
+    const customer = await tenantStorage.run(user.tenantId, () =>
         prisma.customer.findFirst({ where: { id, tenant_id: user.tenantId } })
     )
 
@@ -300,7 +550,7 @@ export async function customerRoutes(app: FastifyInstance) {
         })
     }
 
-    const updated = await tenantStorage.run(user.tenantId, () => 
+    const updated = await tenantStorage.run(user.tenantId, () =>
         prisma.customer.update({
             where: { id },
             data: {

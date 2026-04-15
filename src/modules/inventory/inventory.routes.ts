@@ -21,6 +21,20 @@ const querySchema = z.object({
   to: z.string().optional(),
 });
 
+const errorResponse = {
+  type: "object",
+  properties: {
+    success: { type: "boolean" },
+    error: {
+      type: "object",
+      properties: {
+        code: { type: "string" },
+        message: { type: "string" },
+      },
+    },
+  },
+};
+
 export async function inventoryRoutes(app: FastifyInstance) {
   const authHook = async (req: any, res: any) => {
     try {
@@ -34,6 +48,63 @@ export async function inventoryRoutes(app: FastifyInstance) {
   app.get(
     "/movements",
     {
+      schema: {
+        tags: ["Inventory"],
+        summary: "Listar movimientos de inventario",
+        description:
+          "Retorna el historial paginado de movimientos de inventario. Permite filtrar por producto, tipo y rango de fechas.",
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: "object",
+          properties: {
+            page: { type: "integer", minimum: 1, default: 1 },
+            limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+            product_id: { type: "string", format: "uuid" },
+            type: {
+              type: "string",
+              enum: ["sale", "purchase", "adjustment", "loss", "return"],
+              description: "Tipo de movimiento",
+            },
+            from: { type: "string", format: "date-time", description: "Fecha inicio (ISO 8601)" },
+            to: { type: "string", format: "date-time", description: "Fecha fin (ISO 8601)" },
+          },
+        },
+        response: {
+          200: {
+            description: "Historial de movimientos",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    type: { type: "string" },
+                    delta: { type: "number" },
+                    quantity_before: { type: "number" },
+                    quantity_after: { type: "number" },
+                    reason: { type: "string" },
+                    created_at: { type: "string", format: "date-time" },
+                    product: { type: "object" },
+                    user: { type: "object" },
+                  },
+                },
+              },
+              meta: {
+                type: "object",
+                properties: {
+                  page: { type: "integer" },
+                  limit: { type: "integer" },
+                  total: { type: "integer" },
+                  totalPages: { type: "integer" },
+                },
+              },
+            },
+          },
+        },
+      },
       preHandler: [authHook, requirePermission("inventory", "read")],
     },
     async (req, res) => {
@@ -79,6 +150,61 @@ export async function inventoryRoutes(app: FastifyInstance) {
   app.post(
     "/adjust",
     {
+      schema: {
+        tags: ["Inventory"],
+        summary: "Ajustar stock de un producto",
+        description: `Registra un movimiento de inventario y actualiza el stock del producto.
+**Tipos de ajuste:**
+- \`purchase\`: Entrada de mercancía (aumenta stock)
+- \`adjustment\`: Ajuste manual (puede aumentar o disminuir)
+- \`loss\`: Merma o pérdida (disminuye stock)`,
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: "object",
+          required: ["product_id", "delta", "type", "reason"],
+          properties: {
+            product_id: { type: "string", format: "uuid" },
+            delta: {
+              type: "number",
+              minimum: 1,
+              description: "Cantidad a sumar al stock actual (siempre positivo)",
+            },
+            type: {
+              type: "string",
+              enum: ["purchase", "adjustment", "loss"],
+            },
+            reason: {
+              type: "string",
+              minLength: 3,
+              description: "Descripción del motivo del ajuste",
+            },
+            branch_id: { type: "string", format: "uuid" },
+          },
+        },
+        response: {
+          201: {
+            description: "Movimiento registrado",
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  type: { type: "string" },
+                  delta: { type: "number" },
+                  quantity_before: { type: "number" },
+                  quantity_after: { type: "number" },
+                  reason: { type: "string" },
+                  product: { type: "object" },
+                },
+              },
+            },
+          },
+          400: { description: "Stock resultante negativo", ...errorResponse },
+          404: { description: "Producto no encontrado", ...errorResponse },
+        },
+      },
       preHandler: [authHook, requirePermission("inventory", "adjust")],
     },
     async (req, res) => {

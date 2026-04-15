@@ -9,7 +9,7 @@ import prisma from "../../lib/prisma.js";
 import { featureCache } from "../../lib/redis.js";
 import { env } from "../../config/env.js";
 
-const stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+const stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: "2026-03-25.dahlia" });
 
 // Map de status de Stripe → status interno
 const statusMap: Record<string, SubscriptionStatus> = {
@@ -23,15 +23,23 @@ const statusMap: Record<string, SubscriptionStatus> = {
 };
 
 export async function stripeWebhooksRoutes(app: FastifyInstance) {
-  // Stripe necesita el body crudo (sin parsear) para verificar la firma
+  // Stripe requiere el body como Buffer para verificar la firma HMAC.
+  // Eliminamos el parser JSON heredado del scope padre y registramos uno
+  // que entrega el buffer crudo, evitando que Fastify v5 lo deserialice.
+  app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
     "application/json",
     { parseAs: "buffer" },
-    (req, body, done) => done(null, body),
+    (_req, body, done) => done(null, body),
   );
 
   app.post("/stripe", async (request, reply) => {
     const sig = request.headers["stripe-signature"] as string;
+
+    if (!sig) {
+      app.log.warn("[Stripe webhook] Header stripe-signature ausente");
+      return reply.code(400).send({ error: "Header stripe-signature requerido" });
+    }
 
     let event: Stripe.Event;
     try {
@@ -41,7 +49,7 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
         env.STRIPE_WEBHOOK_SECRET,
       );
     } catch (err: any) {
-      app.log.warn(`Webhook de Stripe inválido: ${err.message}`);
+      app.log.warn(`[Stripe webhook] Firma inválida: ${err.message}`);
       return reply.code(400).send({ error: "Firma inválida" });
     }
 
@@ -60,19 +68,33 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
         case "customer.subscription.updated": {
           const sub = event.data.object as Stripe.Subscription;
           const tenantId = sub.metadata?.tenant_id;
+          const planCode = sub.metadata?.plan_code;
+
+          app.log.info(`[Stripe webhook] ${event.type} | sub=${sub.id} | tenant=${tenantId} | plan=${planCode} | status=${sub.status}`);
 
           if (!tenantId) {
-            app.log.warn(`Suscripción ${sub.id} sin tenant_id en metadata`);
+            app.log.warn(`[Stripe webhook] Suscripción ${sub.id} sin tenant_id en metadata — ignorado`);
             break;
           }
 
-          // Buscar el plan por price_id de Stripe
-          const priceId = sub.items.data[0]?.price?.id;
-          const plan = priceId
-            ? await prisma.plan.findFirst({
-                where: { code: sub.metadata?.plan_code },
-              })
+          // Buscar el plan por plan_code guardado en la metadata de la suscripción
+          const plan = planCode
+            ? await prisma.plan.findFirst({ where: { code: planCode } })
             : null;
+
+          if (!plan) {
+            app.log.warn(`[Stripe webhook] Plan "${planCode}" no encontrado en BD para sub=${sub.id}`);
+          }
+
+          // En API 2026-03-25.dahlia, current_period_start/end se leen desde el
+          // primer SubscriptionItem (se movieron de Subscription a SubscriptionItem).
+          const item = sub.items.data[0];
+          const periodStart = item?.current_period_start
+            ? new Date(item.current_period_start * 1000)
+            : new Date();
+          const periodEnd = item?.current_period_end
+            ? new Date(item.current_period_end * 1000)
+            : new Date();
 
           await prisma.subscription.upsert({
             where: { stripe_subscription_id: sub.id },
@@ -84,8 +106,8 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
               stripe_subscription_id: sub.id,
               stripe_customer_id: sub.customer as string,
               status: statusMap[sub.status] ?? SubscriptionStatus.active,
-              current_period_start: new Date(sub.current_period_start * 1000),
-              current_period_end: new Date(sub.current_period_end * 1000),
+              current_period_start: periodStart,
+              current_period_end: periodEnd,
               trial_ends_at: sub.trial_end
                 ? new Date(sub.trial_end * 1000)
                 : null,
@@ -93,8 +115,8 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
             update: {
               status: statusMap[sub.status] ?? SubscriptionStatus.active,
               plan_id: plan?.id ?? undefined,
-              current_period_start: new Date(sub.current_period_start * 1000),
-              current_period_end: new Date(sub.current_period_end * 1000),
+              current_period_start: periodStart,
+              current_period_end: periodEnd,
               trial_ends_at: sub.trial_end
                 ? new Date(sub.trial_end * 1000)
                 : null,
@@ -129,7 +151,9 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
 
         case "invoice.payment_succeeded": {
           const invoice = event.data.object as Stripe.Invoice;
-          const subId = invoice.subscription as string;
+          // En API 2026-03-25.dahlia, invoice.subscription fue eliminado;
+          // el ID de suscripción está en invoice.parent.subscription_details.subscription
+          const subId = (invoice.parent as any)?.subscription_details?.subscription as string | undefined;
 
           if (subId) {
             await prisma.subscription.updateMany({
@@ -147,7 +171,7 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
 
         case "invoice.payment_failed": {
           const invoice = event.data.object as Stripe.Invoice;
-          const subId = invoice.subscription as string;
+          const subId = (invoice.parent as any)?.subscription_details?.subscription as string | undefined;
 
           if (subId) {
             await prisma.subscription.updateMany({

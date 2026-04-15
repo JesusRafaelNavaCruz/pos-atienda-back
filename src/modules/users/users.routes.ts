@@ -31,6 +31,62 @@ const changePasswordSchema = z.object({
   new_password:     z.string().min(8),
 })
 
+// ─── Shared schema fragments ───────────────────────────────────────────────────
+const userProperties = {
+  id: { type: 'string' },
+  email: { type: 'string' },
+  full_name: { type: 'string' },
+  is_active: { type: 'boolean' },
+  last_login_at: { type: 'string', format: 'date-time', nullable: true },
+  created_at: { type: 'string', format: 'date-time' },
+  role: {
+    type: 'object',
+    properties: {
+      id: { type: 'string' },
+      name: { type: 'string' },
+      code: { type: 'string' },
+      permissions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            permission: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                resource: { type: 'string' },
+                action: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  branch: {
+    type: 'object',
+    nullable: true,
+    properties: {
+      id: { type: 'string' },
+      name: { type: 'string' },
+    },
+  },
+}
+
+const errorResponse = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    error: {
+      type: 'object',
+      properties: {
+        code: { type: 'string' },
+        message: { type: 'string' },
+      },
+    },
+  },
+}
+
 export async function usersRoutes(app: FastifyInstance) {
   const authHook = async (req: any, rep: any) => {
     try { await req.jwtVerify() } catch { return rep.code(401).send() }
@@ -38,6 +94,35 @@ export async function usersRoutes(app: FastifyInstance) {
 
   // GET /users
   app.get('/', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Listar usuarios',
+      description: `Retorna los usuarios del tenant.
+Los managers solo ven cajeros de su propia sucursal.`,
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          search: {
+            type: 'string',
+            description: 'Buscar por nombre completo o email',
+          },
+        },
+      },
+      response: {
+        200: {
+          description: 'Lista de usuarios',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'array',
+              items: { type: 'object', properties: userProperties },
+            },
+          },
+        },
+      },
+    },
     preHandler: [authHook, requirePermission('users', 'read')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -73,8 +158,167 @@ export async function usersRoutes(app: FastifyInstance) {
     return res.send({ success: true, data: users })
   })
 
+  // GET /users/roles — listar roles del tenant
+  app.get('/roles', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Listar roles',
+      description: 'Retorna todos los roles del tenant con sus permisos y conteo de usuarios asignados.',
+      security: [{ bearerAuth: [] }],
+      response: {
+        200: {
+          description: 'Lista de roles',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  name: { type: 'string' },
+                  code: { type: 'string' },
+                  permissions: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        role_id: { type: 'string' },
+                        permission_id: { type: 'string' },
+                        permission: {
+                          type: 'object',
+                          properties: {
+                            id: { type: 'string' },
+                            resource: { type: 'string' },
+                            action: { type: 'string' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                  _count: {
+                    type: 'object',
+                    properties: {
+                      users: { type: 'integer' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    preHandler: [authHook, requirePermission('users', 'read')],
+  }, async (req, res) => {
+    const user = req.user as JwtPayload
+
+    const roles = await tenantStorage.run(user.tenantId, () =>
+      prisma.role.findMany({
+        where: { tenant_id: user.tenantId },
+        include: {
+          permissions: { include: { permission: true } },
+          _count: { select: { users: true } },
+        },
+        orderBy: { name: 'asc' },
+      }),
+    )
+
+    return res.send({ success: true, data: roles })
+  })
+
+  // GET /users/me/password — esta ruta debe declararse ANTES de /:id
+  app.put('/me/password', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Cambiar mi contraseña',
+      description: 'Permite al usuario autenticado cambiar su propia contraseña. Invalida todas las sesiones activas al completar.',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['current_password', 'new_password'],
+        properties: {
+          current_password: { type: 'string', description: 'Contraseña actual' },
+          new_password: { type: 'string', minLength: 8, description: 'Nueva contraseña' },
+        },
+      },
+      response: {
+        200: {
+          description: 'Contraseña actualizada. Las sesiones activas fueron invalidadas.',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { message: { type: 'string' } },
+            },
+          },
+        },
+        400: { description: 'Contraseña actual incorrecta', ...errorResponse },
+        404: { description: 'Usuario no encontrado', ...errorResponse },
+      },
+    },
+    preHandler: [authHook],
+  }, async (req, res) => {
+    const user = req.user as JwtPayload
+    const { current_password, new_password } = changePasswordSchema.parse(req.body)
+
+    const found = await tenantStorage.run(user.tenantId, () =>
+      prisma.user.findUnique({ where: { id: user.sub } }),
+    )
+    if (!found) return res.code(404).send()
+
+    const valid = await bcrypt.compare(current_password, found.password_hash)
+    if (!valid) {
+      return res.code(400).send({
+        success: false,
+        error: { code: 'INVALID_PASSWORD', message: 'La contraseña actual es incorrecta' },
+      })
+    }
+
+    const password_hash = await bcrypt.hash(new_password, env.BCRYPT_ROUNDS)
+    await tenantStorage.run(user.tenantId, () =>
+      prisma.user.update({ where: { id: user.sub }, data: { password_hash } }),
+    )
+
+    // Invalidar todas las sesiones activas
+    await tenantStorage.run(user.tenantId, () =>
+      prisma.userSession.deleteMany({ where: { user_id: user.sub } }),
+    )
+
+    return res.send({
+      success: true,
+      data: { message: 'Contraseña actualizada. Por favor, inicia sesión nuevamente.' },
+    })
+  })
+
   // GET /users/:id
   app.get('/:id', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Obtener usuario por ID',
+      description: 'Retorna el detalle del usuario con su rol, permisos y sucursal asignada.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      response: {
+        200: {
+          description: 'Detalle del usuario',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: { type: 'object', properties: userProperties },
+          },
+        },
+        404: { description: 'Usuario no encontrado', ...errorResponse },
+      },
+    },
     preHandler: [authHook, requirePermission('users', 'read')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -104,6 +348,38 @@ export async function usersRoutes(app: FastifyInstance) {
 
   // POST /users — crear usuario en el tenant
   app.post('/', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Crear usuario',
+      description: `Crea un nuevo usuario en el tenant.
+Valida el límite de usuarios según el plan activo.
+Los managers solo pueden crear usuarios con rol de cajero.`,
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['email', 'password', 'full_name', 'role_id'],
+        properties: {
+          email: { type: 'string', format: 'email' },
+          password: { type: 'string', minLength: 8 },
+          full_name: { type: 'string', minLength: 2, maxLength: 200 },
+          role_id: { type: 'string', format: 'uuid' },
+          branch_id: { type: 'string', format: 'uuid' },
+        },
+      },
+      response: {
+        201: {
+          description: 'Usuario creado exitosamente',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: { type: 'object', properties: userProperties },
+          },
+        },
+        400: { description: 'Rol inválido', ...errorResponse },
+        403: { description: 'Límite de usuarios alcanzado o sin permiso', ...errorResponse },
+        409: { description: 'Email ya registrado en este tenant', ...errorResponse },
+      },
+    },
     preHandler: [authHook, requirePermission('users', 'create')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -185,6 +461,40 @@ export async function usersRoutes(app: FastifyInstance) {
 
   // PUT /users/:id
   app.put('/:id', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Actualizar usuario',
+      description: 'Actualiza el nombre, rol, sucursal o estado activo de un usuario. No se puede modificar al usuario owner a menos que seas owner.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      body: {
+        type: 'object',
+        properties: {
+          full_name: { type: 'string', minLength: 2, maxLength: 200 },
+          role_id: { type: 'string', format: 'uuid' },
+          branch_id: { type: 'string', format: 'uuid', nullable: true },
+          is_active: { type: 'boolean' },
+        },
+      },
+      response: {
+        200: {
+          description: 'Usuario actualizado',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: { type: 'object', properties: userProperties },
+          },
+        },
+        403: { description: 'Sin permiso para modificar este usuario', ...errorResponse },
+        404: { description: 'Usuario no encontrado', ...errorResponse },
+      },
+    },
     preHandler: [authHook, requirePermission('users', 'update')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -229,6 +539,35 @@ export async function usersRoutes(app: FastifyInstance) {
 
   // DELETE /users/:id — soft delete
   app.delete('/:id', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Desactivar usuario',
+      description: 'Realiza un soft delete del usuario (is_active = false). No se puede eliminar al owner ni al propio usuario.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      response: {
+        200: {
+          description: 'Usuario desactivado',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { message: { type: 'string' } },
+            },
+          },
+        },
+        400: { description: 'No puedes eliminar tu propio usuario', ...errorResponse },
+        403: { description: 'No puedes eliminar al owner', ...errorResponse },
+        404: { description: 'Usuario no encontrado', ...errorResponse },
+      },
+    },
     preHandler: [authHook, requirePermission('users', 'delete')],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -270,6 +609,46 @@ export async function usersRoutes(app: FastifyInstance) {
 
   // PUT /users/:id/pin — asignar o eliminar PIN de acceso rápido
   app.put('/:id/pin', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Asignar o eliminar PIN',
+      description: 'Establece o elimina el PIN de acceso rápido de un usuario. Solo el propio usuario o el owner pueden modificarlo.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      body: {
+        type: 'object',
+        required: ['pin'],
+        properties: {
+          pin: {
+            type: 'string',
+            minLength: 4,
+            maxLength: 4,
+            nullable: true,
+            description: 'PIN numérico de 4 dígitos. Enviar null para eliminar el PIN.',
+          },
+        },
+      },
+      response: {
+        200: {
+          description: 'PIN actualizado o eliminado',
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { message: { type: 'string' } },
+            },
+          },
+        },
+        403: { description: 'Sin permiso para cambiar el PIN de este usuario', ...errorResponse },
+      },
+    },
     preHandler: [authHook],
   }, async (req, res) => {
     const user = req.user as JwtPayload
@@ -294,61 +673,5 @@ export async function usersRoutes(app: FastifyInstance) {
       success: true,
       data: { message: pin ? 'PIN actualizado' : 'PIN eliminado' },
     })
-  })
-
-  // PUT /users/me/password — cambiar contraseña propia
-  app.put('/me/password', {
-    preHandler: [authHook],
-  }, async (req, res) => {
-    const user = req.user as JwtPayload
-    const { current_password, new_password } = changePasswordSchema.parse(req.body)
-
-    const found = await tenantStorage.run(user.tenantId, () =>
-      prisma.user.findUnique({ where: { id: user.sub } }),
-    )
-    if (!found) return res.code(404).send()
-
-    const valid = await bcrypt.compare(current_password, found.password_hash)
-    if (!valid) {
-      return res.code(400).send({
-        success: false,
-        error: { code: 'INVALID_PASSWORD', message: 'La contraseña actual es incorrecta' },
-      })
-    }
-
-    const password_hash = await bcrypt.hash(new_password, env.BCRYPT_ROUNDS)
-    await tenantStorage.run(user.tenantId, () =>
-      prisma.user.update({ where: { id: user.sub }, data: { password_hash } }),
-    )
-
-    // Invalidar todas las sesiones activas
-    await tenantStorage.run(user.tenantId, () =>
-      prisma.userSession.deleteMany({ where: { user_id: user.sub } }),
-    )
-
-    return res.send({
-      success: true,
-      data: { message: 'Contraseña actualizada. Por favor, inicia sesión nuevamente.' },
-    })
-  })
-
-  // GET /users/roles — listar roles del tenant
-  app.get('/roles', {
-    preHandler: [authHook, requirePermission('users', 'read')],
-  }, async (req, res) => {
-    const user = req.user as JwtPayload
-
-    const roles = await tenantStorage.run(user.tenantId, () =>
-      prisma.role.findMany({
-        where: { tenant_id: user.tenantId },
-        include: {
-          permissions: { include: { permission: true } },
-          _count: { select: { users: true } },
-        },
-        orderBy: { name: 'asc' },
-      }),
-    )
-
-    return res.send({ success: true, data: roles })
   })
 }

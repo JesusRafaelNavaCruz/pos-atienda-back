@@ -22,6 +22,7 @@ import { usersRoutes } from "./modules/users/users.routes";
 import { suppliersRoutes } from "./modules/suppliers/suppliers.routes";
 import { salesRoutes } from "./modules/sales/sales.routes";
 import { subscriptionsRoutes } from "./modules/tenants/tenants.routes";
+import { stripeWebhooksRoutes } from "./modules/tenants/stripe-webhooks.routes";
 import { reportsRoutes } from "./modules/reports/reports.routes";
 
 // Create instance of Fastify
@@ -112,7 +113,7 @@ app.get("/health", async () => {
   let dbOk = false;
 
   try {
-    await redis.ping();
+    await redis?.ping();
     redisOk = true;
   } catch {}
 
@@ -147,6 +148,7 @@ await app.register(customerRoutes, { prefix: `${prefix}/customers` });
 await app.register(usersRoutes, { prefix: `${prefix}/users` });
 await app.register(reportsRoutes, { prefix: `${prefix}/reports` });
 await app.register(subscriptionsRoutes, { prefix: `${prefix}/subscriptions` });
+await app.register(stripeWebhooksRoutes, { prefix: "/webhooks" });
 
 // Arranque del servidor
 async function start() {
@@ -157,7 +159,7 @@ async function start() {
 
     // Conectar Redis
     await getRedis()
-      .connect()
+      ?.connect()
       .catch(() => {});
 
     // Levantar servidor
