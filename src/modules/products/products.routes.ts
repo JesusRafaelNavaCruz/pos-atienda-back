@@ -146,7 +146,7 @@ export async function productsRoutes(app: FastifyInstance) {
       if (search) {
         where.OR = [
           { name: { contains: search, mode: "insensitive" } },
-          { barcode: { containts: search } },
+          { barcode: { contains: search } },
           { sku: { contains: search, mode: "insensitive" } },
         ];
       }
@@ -275,8 +275,8 @@ export async function productsRoutes(app: FastifyInstance) {
       );
 
       if (!product) {
-        return res.code(401).send({
-          success: true,
+        return res.code(404).send({
+          success: false,
           error: { code: "NOT_FOUND", message: "Producto no encontrado" },
         });
       }
@@ -330,8 +330,8 @@ export async function productsRoutes(app: FastifyInstance) {
       );
 
       if (!product) {
-        return res.code(401).send({
-          success: true,
+        return res.code(404).send({
+          success: false,
           error: {
             code: "NOT_FOUND",
             message: "Producto no encontrado para este código",

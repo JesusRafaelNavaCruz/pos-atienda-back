@@ -108,13 +108,45 @@ Los cajeros solo pueden ver sus propias ventas.`,
           type: 'object',
           properties: {
             success: { type: 'boolean' },
-            data: { type: 'array', items: { type: 'object' } },
+            data: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  id:         { type: 'string' },
+                  folio:      { type: 'string' },
+                  status:     { type: 'string' },
+                  subtotal:   { type: 'number' },
+                  discount:   { type: 'number' },
+                  total:      { type: 'number' },
+                  notes:      { type: 'string', nullable: true },
+                  created_at: { type: 'string', format: 'date-time' },
+                  user:       { type: 'object', properties: { full_name: { type: 'string' } } },
+                  customer:   { type: 'object', nullable: true, properties: { name: { type: 'string' } } },
+                  branch:     { type: 'object', properties: { name: { type: 'string' } } },
+                  payments: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        method: { type: 'string' },
+                        amount: { type: 'number' },
+                      },
+                    },
+                  },
+                  _count: {
+                    type: 'object',
+                    properties: { items: { type: 'integer' } },
+                  },
+                },
+              },
+            },
             meta: {
               type: 'object',
               properties: {
-                page: { type: 'integer' },
-                limit: { type: 'integer' },
-                total: { type: 'integer' },
+                page:       { type: 'integer' },
+                limit:      { type: 'integer' },
+                total:      { type: 'integer' },
                 totalPages: { type: 'integer' },
               },
             },
