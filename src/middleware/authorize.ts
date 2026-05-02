@@ -1,7 +1,7 @@
 import { env } from "@/config/env";
 import prisma from "@/lib/prisma";
 import { featureCache } from "@/lib/redis";
-import type { FeatureKey, JwtPayload } from "@/types";
+import type { AdminJwtPayload, FeatureKey, JwtPayload } from "@/types";
 import { FastifyReply, FastifyRequest } from "fastify";
 
 export function requireFeature(featureKey: FeatureKey) {
@@ -110,4 +110,19 @@ export function requirePermission(resource: string, action: string) {
 
   }
 
+}
+
+export function requireSuperAdmin() {
+  return async (req: FastifyRequest, res: FastifyReply) => {
+    const user = req.user as AdminJwtPayload
+    if (!user?.isSuperAdmin) {
+      return res.code(403).send({
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Acceso restringido a super administradores',
+        },
+      })
+    }
+  }
 }

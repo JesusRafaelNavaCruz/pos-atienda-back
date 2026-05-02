@@ -243,7 +243,7 @@ export async function customerRoutes(app: FastifyInstance) {
       );
 
       if (!customer) {
-        return res.code(401).send({
+        return res.code(404).send({
           success: false,
           error: {
             code: "NOT_FOUND",
@@ -384,7 +384,7 @@ export async function customerRoutes(app: FastifyInstance) {
       );
 
       if (!existing) {
-        return res.code(401).send({
+        return res.code(404).send({
           success: false,
           error: { code: "NOT_FOUND", message: "Cliente no encontrado" },
         });
@@ -531,7 +531,7 @@ export async function customerRoutes(app: FastifyInstance) {
     )
 
     if (!customer) {
-        return res.code(401).send({
+        return res.code(404).send({
             success: false,
             error: {
                 code: 'NOT_FOUND',

@@ -40,3 +40,17 @@ export interface RefreshTokenPayload {
   userId: string
   tenantId: string
 }
+
+export interface AdminJwtPayload {
+  sub: string          // admin user id
+  email: string
+  fullName: string
+  isSuperAdmin: true
+  iat?: number
+  exp?: number
+}
+
+export interface AdminRefreshTokenPayload {
+  sub: string          // session id
+  adminId: string
+}

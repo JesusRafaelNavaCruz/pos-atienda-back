@@ -24,6 +24,8 @@ import { salesRoutes } from "./modules/sales/sales.routes";
 import { subscriptionsRoutes } from "./modules/tenants/tenants.routes";
 import { stripeWebhooksRoutes } from "./modules/tenants/stripe-webhooks.routes";
 import { reportsRoutes } from "./modules/reports/reports.routes";
+import { adminAuthRoutes } from "./modules/admin/admin.auth.routes";
+import { adminRoutes } from "./modules/admin/admin.routes";
 
 // Create instance of Fastify
 const app = Fastify({
@@ -149,6 +151,8 @@ await app.register(usersRoutes, { prefix: `${prefix}/users` });
 await app.register(reportsRoutes, { prefix: `${prefix}/reports` });
 await app.register(subscriptionsRoutes, { prefix: `${prefix}/subscriptions` });
 await app.register(stripeWebhooksRoutes, { prefix: "/webhooks" });
+await app.register(adminAuthRoutes, { prefix: `${prefix}/admin/auth` });
+await app.register(adminRoutes, { prefix: `${prefix}/admin` });
 
 // Arranque del servidor
 async function start() {
