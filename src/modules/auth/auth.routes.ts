@@ -516,7 +516,7 @@ export async function authRoutes(app: FastifyInstance) {
           try {
             await req.jwtVerify();
           } catch {
-            return rep.code(401).send();
+            return rep.code(200).send();
           }
         },
       ],
