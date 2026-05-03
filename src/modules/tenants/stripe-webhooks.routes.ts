@@ -41,7 +41,7 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "Header stripe-signature requerido" });
     }
 
-    let event: Stripe.Event;
+    let event: any;
     try {
       event = stripe.webhooks.constructEvent(
         request.body as Buffer,
@@ -66,7 +66,7 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
       switch (event.type) {
         case "customer.subscription.created":
         case "customer.subscription.updated": {
-          const sub = event.data.object as Stripe.Subscription;
+          const sub = event.data.object as any;
           const tenantId = sub.metadata?.tenant_id;
           const planCode = sub.metadata?.plan_code;
 
@@ -132,7 +132,7 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
         }
 
         case "customer.subscription.deleted": {
-          const sub = event.data.object as Stripe.Subscription;
+          const sub = event.data.object as any;
           const tenantId = sub.metadata?.tenant_id;
 
           if (tenantId) {
@@ -150,7 +150,7 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
         }
 
         case "invoice.payment_succeeded": {
-          const invoice = event.data.object as Stripe.Invoice;
+          const invoice = event.data.object as any;
           // En API 2026-03-25.dahlia, invoice.subscription fue eliminado;
           // el ID de suscripción está en invoice.parent.subscription_details.subscription
           const subId = (invoice.parent as any)?.subscription_details?.subscription as string | undefined;
@@ -170,7 +170,7 @@ export async function stripeWebhooksRoutes(app: FastifyInstance) {
         }
 
         case "invoice.payment_failed": {
-          const invoice = event.data.object as Stripe.Invoice;
+          const invoice = event.data.object as any;
           const subId = (invoice.parent as any)?.subscription_details?.subscription as string | undefined;
 
           if (subId) {
