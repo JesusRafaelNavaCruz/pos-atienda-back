@@ -139,8 +139,7 @@ export async function productsRoutes(app: FastifyInstance) {
       } = query;
 
       const where: any = {
-        tenant_id: user.tenantId,
-        is_active,
+        tenant_id: user.tenantId
       };
 
       if (search) {
