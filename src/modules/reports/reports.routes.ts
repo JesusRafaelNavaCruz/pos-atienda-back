@@ -1,5 +1,6 @@
 // src/modules/reports/reports.routes.ts
 import type { FastifyInstance } from "fastify";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma, { tenantStorage } from "../../lib/prisma.js";
 import {
@@ -7,6 +8,49 @@ import {
   requireFeature,
 } from "../../middleware/authorize.js";
 import type { JwtPayload } from "../../types/index.js";
+
+type SalesPeriod = "today" | "week" | "month" | "year";
+
+function getPeriodRange(period: SalesPeriod) {
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  switch (period) {
+    case "today":
+      return {
+        from: d,
+        to: new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1),
+        prevFrom: new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1),
+        prevTo: d,
+        label: "Hoy",
+      };
+    case "week": {
+      const ws = new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay());
+      return {
+        from: ws,
+        to: new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + 7),
+        prevFrom: new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() - 7),
+        prevTo: ws,
+        label: "Esta semana",
+      };
+    }
+    case "month":
+      return {
+        from: new Date(now.getFullYear(), now.getMonth(), 1),
+        to: new Date(now.getFullYear(), now.getMonth() + 1, 1),
+        prevFrom: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+        prevTo: new Date(now.getFullYear(), now.getMonth(), 1),
+        label: "Este mes",
+      };
+    case "year":
+      return {
+        from: new Date(now.getFullYear(), 0, 1),
+        to: new Date(now.getFullYear() + 1, 0, 1),
+        prevFrom: new Date(now.getFullYear() - 1, 0, 1),
+        prevTo: new Date(now.getFullYear(), 0, 1),
+        label: String(now.getFullYear()),
+      };
+  }
+}
 
 const dateRangeSchema = z.object({
   from: z.string(),
@@ -42,49 +86,122 @@ export async function reportsRoutes(app: FastifyInstance) {
     }
   };
 
-  // GET /reports/dashboard — métricas para el dashboard principal
+  // GET /reports/dashboard — KPIs del negocio por período
   app.get(
     "/dashboard",
     {
       schema: {
         tags: ["Reports"],
         summary: "Dashboard principal",
-        description: `Retorna métricas clave para el dashboard:
-- Ventas de hoy vs ayer (con % de crecimiento)
-- Ventas del mes vs mes anterior
-- Conteo de productos con stock bajo
-- Top 5 productos más vendidos hoy
-- Desglose de ventas de hoy por método de pago`,
+        description: `KPIs del negocio para el período seleccionado (today/week/month/year).
+
+Cada KPI incluye comparación vs el período anterior equivalente.
+Las transacciones recientes son siempre las últimas 10, independiente del período.`,
         security: [{ bearerAuth: [] }],
+        querystring: {
+          type: "object",
+          required: ["period"],
+          properties: {
+            period: {
+              type: "string",
+              enum: ["today", "week", "month", "year"],
+              description: "Período para los KPIs",
+            },
+            branch_id: {
+              type: "string",
+              format: "uuid",
+              description: "Filtrar por sucursal",
+            },
+          },
+        },
         response: {
           200: {
-            description: "Métricas del dashboard",
             type: "object",
             properties: {
               success: { type: "boolean" },
               data: {
                 type: "object",
                 properties: {
-                  today: {
+                  period: {
                     type: "object",
                     properties: {
-                      sales: { type: "integer" },
-                      amount: { type: "number" },
-                      growthVsYesterday: { type: "number", nullable: true },
+                      label: { type: "string" },
+                      from: { type: "string" },
+                      to: { type: "string" },
                     },
                   },
-                  month: {
+                  sales: {
                     type: "object",
                     properties: {
-                      sales: { type: "integer" },
-                      amount: { type: "number" },
+                      count: { type: "integer" },
+                      revenue: { type: "number" },
                       discount: { type: "number" },
-                      growthVsLastMonth: { type: "number", nullable: true },
+                      growthVsPrevious: { type: "number", nullable: true },
                     },
                   },
-                  lowStockCount: { type: "integer" },
-                  topProducts: { type: "array", items: { type: "object" } },
-                  paymentMethods: { type: "array", items: { type: "object" } },
+                  avgTicket: {
+                    type: "object",
+                    properties: {
+                      value: { type: "number" },
+                      growthVsPrevious: { type: "number", nullable: true },
+                    },
+                  },
+                  profit: {
+                    type: "object",
+                    properties: {
+                      gross: { type: "number" },
+                      margin: { type: "number", description: "Margen bruto %" },
+                      growthVsPrevious: { type: "number", nullable: true },
+                    },
+                  },
+                  topProducts: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        product: {
+                          type: "object",
+                          nullable: true,
+                          properties: {
+                            id: { type: "string" },
+                            name: { type: "string" },
+                            unit: { type: "string", nullable: true },
+                          },
+                        },
+                        quantity: { type: "number" },
+                        revenue: { type: "number" },
+                      },
+                    },
+                  },
+                  recentTransactions: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        id: { type: "string" },
+                        total: { type: "number" },
+                        cashier: { type: "string" },
+                        createdAt: { type: "string", format: "date-time" },
+                      },
+                    },
+                  },
+                  paymentMethods: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        method: { type: "string" },
+                        amount: { type: "number" },
+                        count: { type: "integer" },
+                      },
+                    },
+                  },
+                  alerts: {
+                    type: "object",
+                    properties: {
+                      lowStockCount: { type: "integer" },
+                    },
+                  },
                 },
               },
             },
@@ -96,76 +213,113 @@ export async function reportsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.user as JwtPayload;
 
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const yesterday = new Date(today);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-      const startOfLastMonth = new Date(
-        today.getFullYear(),
-        today.getMonth() - 1,
-        1,
-      );
-      const endOfLastMonth = new Date(
-        today.getFullYear(),
-        today.getMonth(),
-        0,
-        23,
-        59,
-        59,
-      );
+      const { period, branch_id } = z
+        .object({
+          period: z.enum(["today", "week", "month", "year"]),
+          branch_id: z.string().optional(),
+        })
+        .parse(request.query);
+
+      const { from, to, prevFrom, prevTo, label } = getPeriodRange(period);
+
+      const saleWhere: any = {
+        tenant_id: user.tenantId,
+        status: "completed",
+        created_at: { gte: from, lt: to },
+      };
+      if (branch_id) saleWhere.branch_id = branch_id;
+
+      const prevSaleWhere = {
+        ...saleWhere,
+        created_at: { gte: prevFrom, lt: prevTo },
+      };
+
+      const branchFilter = branch_id
+        ? Prisma.sql`AND s.branch_id = ${branch_id}::uuid`
+        : Prisma.empty;
 
       const [
-        todaySales,
-        yesterdaySales,
-        monthSales,
-        lastMonthSales,
-        lowStockProducts,
-        topProducts,
+        salesAgg,
+        prevSalesAgg,
+        profitRows,
+        prevProfitRows,
+        topItemGroups,
+        recentSales,
         paymentMethods,
+        lowStockCount,
       ] = await tenantStorage.run(user.tenantId, () =>
         Promise.all([
-          // Ventas de hoy
           prisma.sale.aggregate({
-            where: {
-              tenant_id: user.tenantId,
-              status: "completed",
-              created_at: { gte: today },
-            },
-            _count: { id: true },
-            _sum: { total: true },
-          }),
-          // Ventas de ayer
-          prisma.sale.aggregate({
-            where: {
-              tenant_id: user.tenantId,
-              status: "completed",
-              created_at: { gte: yesterday, lt: today },
-            },
-            _count: { id: true },
-            _sum: { total: true },
-          }),
-          // Ventas del mes
-          prisma.sale.aggregate({
-            where: {
-              tenant_id: user.tenantId,
-              status: "completed",
-              created_at: { gte: startOfMonth },
-            },
+            where: saleWhere,
             _count: { id: true },
             _sum: { total: true, discount: true },
+            _avg: { total: true },
           }),
-          // Ventas del mes anterior
           prisma.sale.aggregate({
+            where: prevSaleWhere,
+            _sum: { total: true },
+            _avg: { total: true },
+          }),
+          // Utilidad bruta del período actual
+          prisma.$queryRaw<Array<{ gross_profit: number; revenue: number }>>`
+            SELECT
+              COALESCE(SUM(si.subtotal - si.quantity * p.cost), 0)::numeric AS gross_profit,
+              COALESCE(SUM(si.subtotal), 0)::numeric AS revenue
+            FROM negocio.sale_items si
+            JOIN negocio.products p ON p.id = si.product_id
+            JOIN negocio.sales s ON s.id = si.sale_id
+            WHERE s.tenant_id = ${user.tenantId}::uuid
+              AND s.status = 'completed'
+              AND s.created_at >= ${from}
+              AND s.created_at < ${to}
+              ${branchFilter}
+          `,
+          // Utilidad bruta del período anterior
+          prisma.$queryRaw<Array<{ gross_profit: number }>>`
+            SELECT
+              COALESCE(SUM(si.subtotal - si.quantity * p.cost), 0)::numeric AS gross_profit
+            FROM negocio.sale_items si
+            JOIN negocio.products p ON p.id = si.product_id
+            JOIN negocio.sales s ON s.id = si.sale_id
+            WHERE s.tenant_id = ${user.tenantId}::uuid
+              AND s.status = 'completed'
+              AND s.created_at >= ${prevFrom}
+              AND s.created_at < ${prevTo}
+              ${branchFilter}
+          `,
+          // Top 5 productos más vendidos del período
+          prisma.saleItem.groupBy({
+            by: ["product_id"],
+            where: {
+              sale: {
+                tenant_id: user.tenantId,
+                status: "completed",
+                created_at: { gte: from, lt: to },
+              },
+            },
+            _sum: { quantity: true, subtotal: true },
+            orderBy: { _sum: { subtotal: "desc" } },
+            take: 5,
+          }),
+          // Últimas 10 transacciones (sin filtro de período)
+          prisma.sale.findMany({
+            where: { tenant_id: user.tenantId, status: "completed" },
+            orderBy: { created_at: "desc" },
+            take: 10,
+            select: { id: true, total: true, created_at: true, user_id: true },
+          }),
+          // Métodos de pago del período
+          prisma.payment.groupBy({
+            by: ["method"],
             where: {
               tenant_id: user.tenantId,
               status: "completed",
-              created_at: { gte: startOfLastMonth, lte: endOfLastMonth },
+              created_at: { gte: from, lt: to },
             },
+            _sum: { amount: true },
             _count: { id: true },
-            _sum: { total: true },
           }),
-          // Productos con stock bajo
+          // Productos con stock bajo (alerta permanente)
           prisma.product.count({
             where: {
               tenant_id: user.tenantId,
@@ -173,36 +327,11 @@ export async function reportsRoutes(app: FastifyInstance) {
               stock: { lte: prisma.product.fields.min_stock },
             },
           }),
-          // Top 5 productos más vendidos hoy
-          prisma.saleItem.groupBy({
-            by: ["product_id"],
-            where: {
-              sale: {
-                tenant_id: user.tenantId,
-                status: "completed",
-                created_at: { gte: today },
-              },
-            },
-            _sum: { quantity: true, subtotal: true },
-            _count: { product_id: true },
-            orderBy: { _sum: { subtotal: "desc" } },
-            take: 5,
-          }),
-          // Ventas de hoy por método de pago
-          prisma.payment.groupBy({
-            by: ["method"],
-            where: {
-              tenant_id: user.tenantId,
-              status: "completed",
-              created_at: { gte: today },
-            },
-            _sum: { amount: true },
-          }),
         ]),
       );
 
       // Resolver nombres de productos top
-      const productIds = topProducts.map((tp) => tp.product_id);
+      const productIds = topItemGroups.map((i) => i.product_id);
       const products =
         productIds.length > 0
           ? await tenantStorage.run(user.tenantId, () =>
@@ -212,74 +341,129 @@ export async function reportsRoutes(app: FastifyInstance) {
               }),
             )
           : [];
-
       const productMap = new Map(products.map((p) => [p.id, p]));
 
-      const todayTotal = Number(todaySales._sum.total ?? 0);
-      const yesterdayTotal = Number(yesterdaySales._sum.total ?? 0);
-      const monthTotal = Number(monthSales._sum.total ?? 0);
-      const lastMonthTotal = Number(lastMonthSales._sum.total ?? 0);
+      // Resolver nombres de cajeros de transacciones recientes
+      const recentUserIds = [...new Set(recentSales.map((s) => s.user_id))];
+      const recentUsers =
+        recentUserIds.length > 0
+          ? await tenantStorage.run(user.tenantId, () =>
+              prisma.user.findMany({
+                where: { id: { in: recentUserIds } },
+                select: { id: true, full_name: true },
+              }),
+            )
+          : [];
+      const userMap = new Map(recentUsers.map((u) => [u.id, u.full_name]));
+
+      const growth = (current: number, prev: number) =>
+        prev > 0 ? ((current - prev) / prev) * 100 : null;
+
+      const currentRevenue = Number(salesAgg._sum.total ?? 0);
+      const prevRevenue = Number(prevSalesAgg._sum.total ?? 0);
+      const currentAvgTicket = Number(salesAgg._avg.total ?? 0);
+      const prevAvgTicket = Number(prevSalesAgg._avg.total ?? 0);
+      const currentProfit = Number(profitRows[0]?.gross_profit ?? 0);
+      const prevProfit = Number(prevProfitRows[0]?.gross_profit ?? 0);
+      const profitRevenue = Number(profitRows[0]?.revenue ?? 0);
 
       return reply.send({
         success: true,
         data: {
-          today: {
-            sales: todaySales._count.id,
-            amount: todayTotal,
-            growthVsYesterday:
-              yesterdayTotal > 0
-                ? ((todayTotal - yesterdayTotal) / yesterdayTotal) * 100
-                : null,
+          period: { label, from: from.toISOString(), to: to.toISOString() },
+          sales: {
+            count: salesAgg._count.id,
+            revenue: currentRevenue,
+            discount: Number(salesAgg._sum.discount ?? 0),
+            growthVsPrevious: growth(currentRevenue, prevRevenue),
           },
-          month: {
-            sales: monthSales._count.id,
-            amount: monthTotal,
-            discount: Number(monthSales._sum.discount ?? 0),
-            growthVsLastMonth:
-              lastMonthTotal > 0
-                ? ((monthTotal - lastMonthTotal) / lastMonthTotal) * 100
-                : null,
+          avgTicket: {
+            value: currentAvgTicket,
+            growthVsPrevious: growth(currentAvgTicket, prevAvgTicket),
           },
-          lowStockCount: lowStockProducts,
-          topProducts: topProducts.map((tp) => ({
-            product: productMap.get(tp.product_id),
-            quantity: Number(tp._sum.quantity ?? 0),
-            revenue: Number(tp._sum.subtotal ?? 0),
+          profit: {
+            gross: currentProfit,
+            margin: profitRevenue > 0 ? (currentProfit / profitRevenue) * 100 : 0,
+            growthVsPrevious: growth(currentProfit, prevProfit),
+          },
+          topProducts: topItemGroups.map((item) => ({
+            product: productMap.get(item.product_id),
+            quantity: Number(item._sum.quantity ?? 0),
+            revenue: Number(item._sum.subtotal ?? 0),
+          })),
+          recentTransactions: recentSales.map((s) => ({
+            id: s.id,
+            total: Number(s.total),
+            cashier: userMap.get(s.user_id) ?? "Desconocido",
+            createdAt: s.created_at,
           })),
           paymentMethods: paymentMethods.map((pm) => ({
             method: pm.method,
             amount: Number(pm._sum.amount ?? 0),
+            count: pm._count.id,
           })),
+          alerts: { lowStockCount },
         },
       });
     },
   );
 
-  // GET /reports/sales — reporte de ventas por rango de fecha
+  // GET /reports/sales — reporte de ventas por período o rango de fecha
   app.get(
     "/sales",
     {
       schema: {
         tags: ["Reports"],
-        summary: "Reporte de ventas por período",
-        description: `Retorna el análisis completo de ventas en un rango de fechas:
-- Resumen total (ventas, ingresos, descuentos, ticket promedio)
-- Ventas agrupadas por día
-- Desglose por método de pago
-- Top 10 cajeros por ventas
+        summary: "Reporte de ventas",
+        description: `Retorna el análisis completo de ventas.
+
+Usa \`period\` para períodos predefinidos (today/week/month/year) o \`from\`+\`to\` para rango personalizado.
+
+Cuando se usa \`period\`, la respuesta incluye:
+- Comparación vs el período anterior (\`growthVsPrevious\`)
+- Desglose por hora para \`today\`
+- Desglose por mes para \`year\`
 
 Los cajeros solo pueden ver sus propias ventas.`,
         security: [{ bearerAuth: [] }],
-        querystring: dateRangeQuerystring,
+        querystring: {
+          type: "object",
+          properties: {
+            period: {
+              type: "string",
+              enum: ["today", "week", "month", "year"],
+              description: "Período predefinido (alternativa a from+to)",
+            },
+            from: {
+              type: "string",
+              format: "date-time",
+              description: "Fecha inicio ISO 8601 (requerido si no se usa period)",
+            },
+            to: {
+              type: "string",
+              format: "date-time",
+              description: "Fecha fin ISO 8601 (requerido si no se usa period)",
+            },
+            branch_id: { type: "string", format: "uuid", description: "Filtrar por sucursal" },
+          },
+        },
         response: {
           200: {
-            description: "Reporte de ventas",
             type: "object",
             properties: {
               success: { type: "boolean" },
               data: {
                 type: "object",
                 properties: {
+                  period: {
+                    type: "object",
+                    nullable: true,
+                    properties: {
+                      label: { type: "string" },
+                      from: { type: "string" },
+                      to: { type: "string" },
+                    },
+                  },
                   summary: {
                     type: "object",
                     properties: {
@@ -287,14 +471,40 @@ Los cajeros solo pueden ver sus propias ventas.`,
                       totalRevenue: { type: "number" },
                       totalDiscount: { type: "number" },
                       avgTicket: { type: "number" },
+                      growthVsPrevious: { type: "number", nullable: true },
+                    },
+                  },
+                  byHour: {
+                    type: "array",
+                    nullable: true,
+                    items: {
+                      type: "object",
+                      properties: {
+                        hour: { type: "integer" },
+                        sales: { type: "integer" },
+                        total: { type: "number" },
+                      },
                     },
                   },
                   byDay: {
                     type: "array",
+                    nullable: true,
                     items: {
                       type: "object",
                       properties: {
                         day: { type: "string" },
+                        sales: { type: "integer" },
+                        total: { type: "number" },
+                      },
+                    },
+                  },
+                  byMonth: {
+                    type: "array",
+                    nullable: true,
+                    items: {
+                      type: "object",
+                      properties: {
+                        month: { type: "string" },
                         sales: { type: "integer" },
                         total: { type: "number" },
                       },
@@ -312,66 +522,153 @@ Los cajeros solo pueden ver sus propias ventas.`,
     },
     async (request, reply) => {
       const user = request.user as JwtPayload;
-      const { from, to, branch_id } = dateRangeSchema.parse(request.query);
+
+      const querySchema = z
+        .object({
+          period: z.enum(["today", "week", "month", "year"]).optional(),
+          from: z.string().optional(),
+          to: z.string().optional(),
+          branch_id: z.string().uuid().optional(),
+        })
+        .refine((d) => d.period || (d.from && d.to), {
+          message: "Proporciona 'period' o ambos 'from' y 'to'",
+        });
+
+      const query = querySchema.parse(request.query);
+
+      let from: Date;
+      let to: Date;
+      let periodMeta: { label: string; from: string; to: string } | null = null;
+      let prevFrom: Date | null = null;
+      let prevTo: Date | null = null;
+
+      if (query.period) {
+        const range = getPeriodRange(query.period);
+        from = range.from;
+        to = range.to;
+        prevFrom = range.prevFrom;
+        prevTo = range.prevTo;
+        periodMeta = { label: range.label, from: from.toISOString(), to: to.toISOString() };
+      } else {
+        from = new Date(query.from!);
+        to = new Date(query.to!);
+      }
+
+      const branchFilter = query.branch_id
+        ? Prisma.sql`AND branch_id = ${query.branch_id}::uuid`
+        : Prisma.empty;
 
       const where: any = {
         tenant_id: user.tenantId,
         status: "completed",
-        created_at: { gte: new Date(from), lte: new Date(to) },
+        created_at: { gte: from, lt: to },
       };
-      if (branch_id) where.branch_id = branch_id;
-
-      // Cajeros solo ven sus propias ventas
+      if (query.branch_id) where.branch_id = query.branch_id;
       if (user.roleCode === "cashier") where.user_id = user.sub;
 
-      const [summary, byDay, byPaymentMethod, byUser] = await tenantStorage.run(
-        user.tenantId,
-        () =>
-          Promise.all([
-            prisma.sale.aggregate({
-              where,
-              _count: { id: true },
-              _sum: { total: true, subtotal: true, discount: true },
-              _avg: { total: true },
-            }),
-            // Ventas agrupadas por día
-            prisma.$queryRaw<
-              Array<{ day: string; sales: number; total: number }>
-            >`
-          SELECT
-            DATE(created_at AT TIME ZONE 'America/Mexico_City') AS day,
-            COUNT(*) AS sales,
-            SUM(total)::numeric AS total
-          FROM negocio.sales
-          WHERE tenant_id = ${user.tenantId}::uuid
-            AND status = 'completed'
-            AND created_at BETWEEN ${new Date(from)} AND ${new Date(to)}
-            ${branch_id ? prisma.$queryRaw`AND branch_id = ${branch_id}::uuid` : prisma.$queryRaw``}
-          GROUP BY day
-          ORDER BY day ASC
-        `,
-            prisma.payment.groupBy({
-              by: ["method"],
-              where: {
-                tenant_id: user.tenantId,
-                status: "completed",
-                created_at: { gte: new Date(from), lte: new Date(to) },
-              },
-              _sum: { amount: true },
-              _count: { id: true },
-            }),
-            prisma.sale.groupBy({
-              by: ["user_id"],
-              where,
-              _count: { id: true },
-              _sum: { total: true },
-              orderBy: { _sum: { total: "desc" } },
-              take: 10,
-            }),
-          ]),
+      // Aggregations que siempre se ejecutan
+      const baseQueries = tenantStorage.run(user.tenantId, () =>
+        Promise.all([
+          prisma.sale.aggregate({
+            where,
+            _count: { id: true },
+            _sum: { total: true, discount: true },
+            _avg: { total: true },
+          }),
+          prisma.payment.groupBy({
+            by: ["method"],
+            where: {
+              tenant_id: user.tenantId,
+              status: "completed",
+              created_at: { gte: from, lt: to },
+            },
+            _sum: { amount: true },
+            _count: { id: true },
+          }),
+          prisma.sale.groupBy({
+            by: ["user_id"],
+            where,
+            _count: { id: true },
+            _sum: { total: true },
+            orderBy: { _sum: { total: "desc" } },
+            take: 10,
+          }),
+        ]),
       );
 
-      // Resolver nombres de usuarios
+      // Desglose temporal según el período
+      let timeBreakdownQuery: Promise<any[]>;
+      if (query.period === "today") {
+        timeBreakdownQuery = tenantStorage.run(user.tenantId, () =>
+          prisma.$queryRaw<Array<{ hour: number; sales: number; total: number }>>`
+            SELECT
+              EXTRACT(HOUR FROM created_at AT TIME ZONE 'America/Mexico_City')::int AS hour,
+              COUNT(*)::int AS sales,
+              SUM(total)::numeric AS total
+            FROM negocio.sales
+            WHERE tenant_id = ${user.tenantId}::uuid
+              AND status = 'completed'
+              AND created_at >= ${from}
+              AND created_at < ${to}
+              ${branchFilter}
+            GROUP BY hour
+            ORDER BY hour ASC
+          `,
+        );
+      } else if (query.period === "year") {
+        timeBreakdownQuery = tenantStorage.run(user.tenantId, () =>
+          prisma.$queryRaw<Array<{ month: string; sales: number; total: number }>>`
+            SELECT
+              TO_CHAR(created_at AT TIME ZONE 'America/Mexico_City', 'YYYY-MM') AS month,
+              COUNT(*)::int AS sales,
+              SUM(total)::numeric AS total
+            FROM negocio.sales
+            WHERE tenant_id = ${user.tenantId}::uuid
+              AND status = 'completed'
+              AND created_at >= ${from}
+              AND created_at < ${to}
+              ${branchFilter}
+            GROUP BY month
+            ORDER BY month ASC
+          `,
+        );
+      } else {
+        timeBreakdownQuery = tenantStorage.run(user.tenantId, () =>
+          prisma.$queryRaw<Array<{ day: string; sales: number; total: number }>>`
+            SELECT
+              DATE(created_at AT TIME ZONE 'America/Mexico_City') AS day,
+              COUNT(*)::int AS sales,
+              SUM(total)::numeric AS total
+            FROM negocio.sales
+            WHERE tenant_id = ${user.tenantId}::uuid
+              AND status = 'completed'
+              AND created_at >= ${from}
+              AND created_at < ${to}
+              ${branchFilter}
+            GROUP BY day
+            ORDER BY day ASC
+          `,
+        );
+      }
+
+      // Comparación vs período anterior (solo cuando se usa period)
+      const prevSummaryQuery =
+        prevFrom && prevTo
+          ? tenantStorage.run(user.tenantId, () =>
+              prisma.sale.aggregate({
+                where: {
+                  ...where,
+                  created_at: { gte: prevFrom!, lt: prevTo! },
+                },
+                _sum: { total: true },
+              }),
+            )
+          : Promise.resolve(null);
+
+      const [[summary, byPaymentMethod, byUser], timeBreakdown, prevSummary] =
+        await Promise.all([baseQueries, timeBreakdownQuery, prevSummaryQuery]);
+
+      // Resolver nombres de cajeros
       const userIds = byUser.map((u) => u.user_id);
       const users =
         userIds.length > 0
@@ -384,20 +681,49 @@ Los cajeros solo pueden ver sus propias ventas.`,
           : [];
       const userMap = new Map(users.map((u) => [u.id, u.full_name]));
 
+      const totalRevenue = Number(summary._sum.total ?? 0);
+      const prevRevenue = prevSummary ? Number(prevSummary._sum.total ?? 0) : null;
+      const growthVsPrevious =
+        prevRevenue !== null && prevRevenue > 0
+          ? ((totalRevenue - prevRevenue) / prevRevenue) * 100
+          : null;
+
+      const isToday = query.period === "today";
+      const isYear = query.period === "year";
+      const isDay = !isToday && !isYear;
+
       return reply.send({
         success: true,
         data: {
+          period: periodMeta,
           summary: {
             totalSales: summary._count.id,
-            totalRevenue: Number(summary._sum.total ?? 0),
+            totalRevenue,
             totalDiscount: Number(summary._sum.discount ?? 0),
             avgTicket: Number(summary._avg.total ?? 0),
+            growthVsPrevious,
           },
-          byDay: byDay.map((d) => ({
-            day: d.day,
-            sales: Number(d.sales),
-            total: Number(d.total),
-          })),
+          byHour: isToday
+            ? (timeBreakdown as Array<{ hour: number; sales: number; total: number }>).map((r) => ({
+                hour: r.hour,
+                sales: Number(r.sales),
+                total: Number(r.total),
+              }))
+            : null,
+          byDay: isDay
+            ? (timeBreakdown as Array<{ day: string; sales: number; total: number }>).map((r) => ({
+                day: r.day,
+                sales: Number(r.sales),
+                total: Number(r.total),
+              }))
+            : null,
+          byMonth: isYear
+            ? (timeBreakdown as Array<{ month: string; sales: number; total: number }>).map((r) => ({
+                month: r.month,
+                sales: Number(r.sales),
+                total: Number(r.total),
+              }))
+            : null,
           byPaymentMethod: byPaymentMethod.map((pm) => ({
             method: pm.method,
             amount: Number(pm._sum.amount ?? 0),
