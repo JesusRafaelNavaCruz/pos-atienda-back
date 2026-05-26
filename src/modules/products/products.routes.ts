@@ -30,7 +30,7 @@ const querySchema = z.object({
   search: z.string().optional(),
   category_id: z.string().uuid().optional(),
   low_stock: z.coerce.boolean().optional(),
-  is_active: z.coerce.boolean().default(true),
+  is_active: z.boolean().optional(),
   sortBy: z.enum(["name", "price", "stock", "created_at"]).default("name"),
   sortOrder: z.enum(["asc", "desc"]).default("asc"),
 });
@@ -93,7 +93,7 @@ export async function productsRoutes(app: FastifyInstance) {
             search: { type: "string", description: "Buscar por nombre, barcode o SKU" },
             category_id: { type: "string", format: "uuid" },
             low_stock: { type: "boolean", description: "Filtrar productos con stock bajo" },
-            is_active: { type: "boolean", default: true },
+            is_active: { type: "boolean" },
             sortBy: {
               type: "string",
               enum: ["name", "price", "stock", "created_at"],
@@ -140,7 +140,6 @@ export async function productsRoutes(app: FastifyInstance) {
 
       const where: any = {
         tenant_id: user.tenantId,
-        is_active,
       };
 
       if (search) {
@@ -149,6 +148,10 @@ export async function productsRoutes(app: FastifyInstance) {
           { barcode: { contains: search } },
           { sku: { contains: search, mode: "insensitive" } },
         ];
+      }
+
+      if (is_active !== undefined) {
+        where.is_active = is_active;
       }
 
       if (category_id) where.category_id = category_id;
