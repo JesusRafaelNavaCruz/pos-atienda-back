@@ -275,15 +275,16 @@ Retorna la URL a la que se debe redirigir al usuario para completar el pago.`,
         },
         response: {
           200: {
-            description: "Sesión de Stripe Checkout creada",
+            description: "Sesión de Stripe Checkout creada, o upgrade directo completado",
             type: "object",
             properties: {
               success: { type: "boolean" },
               data: {
                 type: "object",
                 properties: {
-                  checkoutUrl: { type: "string", description: "URL de pago de Stripe" },
-                  sessionId: { type: "string" },
+                  checkoutUrl: { type: "string", nullable: true, description: "URL de pago de Stripe (null si fue upgrade directo)" },
+                  sessionId: { type: "string", nullable: true },
+                  upgraded: { type: "boolean", description: "true si el upgrade se aplicó directamente sin necesidad de nueva sesión de pago" },
                 },
               },
             },
@@ -319,11 +320,60 @@ Retorna la URL a la que se debe redirigir al usuario para completar el pago.`,
       });
       if (!tenant) return res.code(404).send();
 
-      // Obtener o crear customer de Stripe
+      // Obtener suscripción existente del tenant
       const existingSub = await prisma.subscription.findFirst({
         where: { tenant_id: user.tenantId },
+        orderBy: { created_at: "desc" },
       });
 
+      // Si ya tiene suscripción activa en Stripe → upgrade directo (sin nueva sesión de pago)
+      if (existingSub?.stripe_subscription_id) {
+        const stripeSub = await stripe.subscriptions.retrieve(
+          existingSub.stripe_subscription_id,
+          { expand: ["items"] },
+        );
+
+        if (stripeSub.status === "active" || stripeSub.status === "trialing") {
+          // Crear nuevo Price en Stripe para el plan destino
+          const newPrice = await stripe.prices.create({
+            currency: "mxn",
+            unit_amount: Math.round(Number(plan.price_mxn) * 100),
+            recurring: {
+              interval: plan.billing_interval === "monthly" ? "month" : "year",
+            },
+            product_data: { name: `POS Abarrotes — Plan ${plan.name}` },
+          });
+
+          const currentItemId = stripeSub.items.data[0]?.id;
+
+          // Actualizar la suscripción existente con el nuevo plan y metadata
+          await stripe.subscriptions.update(existingSub.stripe_subscription_id, {
+            items: currentItemId
+              ? [{ id: currentItemId, price: newPrice.id }]
+              : [{ price: newPrice.id }],
+            metadata: { tenant_id: user.tenantId, plan_code },
+            proration_behavior: "always_invoice",
+          });
+
+          // Actualizar la BD y el caché de forma inmediata (sin esperar el webhook)
+          await prisma.subscription.update({
+            where: { id: existingSub.id },
+            data: { plan_id: plan.id },
+          });
+          await featureCache.del(user.tenantId);
+
+          app.log.info(
+            `[Upgrade] Tenant ${user.tenantId} actualizado a plan ${plan_code} (sub=${existingSub.stripe_subscription_id})`,
+          );
+
+          return res.send({
+            success: true,
+            data: { upgraded: true, checkoutUrl: null, sessionId: null },
+          });
+        }
+      }
+
+      // Sin suscripción activa en Stripe → nueva sesión de Checkout
       let customerId = existingSub?.stripe_customer_id;
       if (!customerId) {
         const customer = await stripe.customers.create({
@@ -333,7 +383,6 @@ Retorna la URL a la que se debe redirigir al usuario para completar el pago.`,
         customerId = customer.id;
       }
 
-      // Crear sesión de Checkout de Stripe
       const session = await stripe.checkout.sessions.create({
         customer: customerId,
         mode: "subscription",
@@ -354,13 +403,136 @@ Retorna la URL a la que se debe redirigir al usuario para completar el pago.`,
           metadata: { tenant_id: user.tenantId, plan_code },
           trial_period_days: plan.trial_days,
         },
-        success_url,
+        // Siempre inyectar el session_id en la success_url para que /verify funcione
+        success_url: success_url.includes("session_id")
+          ? success_url
+          : `${success_url}${success_url.includes("?") ? "&" : "?"}session_id={CHECKOUT_SESSION_ID}`,
         cancel_url,
       });
 
       return res.send({
         success: true,
-        data: { checkoutUrl: session.url, sessionId: session.id },
+        data: { upgraded: false, checkoutUrl: session.url, sessionId: session.id },
+      });
+    },
+  );
+
+  // POST /subscriptions/verify — verificar pago de Checkout y sincronizar plan
+  // El frontend llama este endpoint al volver de la success_url de Stripe.
+  // No depende del webhook: consulta Stripe directamente con el session_id.
+  app.post(
+    "/verify",
+    {
+      schema: {
+        tags: ["Subscriptions"],
+        summary: "Verificar sesión de Checkout y activar plan",
+        description: `Verifica el pago de una sesión de Stripe Checkout y sincroniza el plan en la BD.
+Debe llamarse desde el frontend al aterrizar en la success_url, pasando el session_id.
+Independiente del webhook: funciona en desarrollo y como fallback en producción.`,
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: "object",
+          required: ["session_id"],
+          properties: {
+            session_id: { type: "string", description: "ID de la sesión de Checkout de Stripe" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  planCode: { type: "string" },
+                  status: { type: "string" },
+                },
+              },
+            },
+          },
+          400: { description: "Sesión no pagada o inválida", ...errorResponse },
+          404: { description: "Plan no encontrado", ...errorResponse },
+        },
+      },
+      preHandler: [authHook],
+    },
+    async (req, res) => {
+      const user = req.user as JwtPayload;
+      const { session_id } = req.body as { session_id: string };
+
+      // Recuperar la sesión de Stripe para validar que el pago fue exitoso
+      const session = await stripe.checkout.sessions.retrieve(session_id, {
+        expand: ["subscription"],
+      });
+
+      if (session.status !== "complete" || session.payment_status !== "paid") {
+        return res.code(400).send({
+          success: false,
+          error: { code: "PAYMENT_NOT_COMPLETED", message: "El pago no fue completado" },
+        });
+      }
+
+      const sub = session.subscription as any;
+      if (!sub) {
+        return res.code(400).send({
+          success: false,
+          error: { code: "NO_SUBSCRIPTION", message: "No se encontró suscripción en la sesión" },
+        });
+      }
+
+      const planCode = sub.metadata?.plan_code as string | undefined;
+      const plan = planCode
+        ? await prisma.plan.findFirst({ where: { code: planCode, is_active: true } })
+        : null;
+
+      if (!plan) {
+        return res.code(404).send({
+          success: false,
+          error: { code: "PLAN_NOT_FOUND", message: `Plan "${planCode}" no encontrado` },
+        });
+      }
+
+      // Leer período desde el item (API 2026-03-25.dahlia)
+      const item = sub.items?.data?.[0];
+      const periodStart = item?.current_period_start
+        ? new Date(item.current_period_start * 1000)
+        : new Date();
+      const periodEnd = item?.current_period_end
+        ? new Date(item.current_period_end * 1000)
+        : new Date();
+
+      // Upsert igual que el webhook — idempotente
+      await prisma.subscription.upsert({
+        where: { stripe_subscription_id: sub.id },
+        create: {
+          tenant_id: user.tenantId,
+          plan_id: plan.id,
+          stripe_subscription_id: sub.id,
+          stripe_customer_id: sub.customer as string,
+          status: (sub.status as any) ?? "active",
+          current_period_start: periodStart,
+          current_period_end: periodEnd,
+          trial_ends_at: sub.trial_end ? new Date(sub.trial_end * 1000) : null,
+        },
+        update: {
+          plan_id: plan.id,
+          status: (sub.status as any) ?? "active",
+          current_period_start: periodStart,
+          current_period_end: periodEnd,
+          trial_ends_at: sub.trial_end ? new Date(sub.trial_end * 1000) : null,
+        },
+      });
+
+      await featureCache.del(user.tenantId);
+
+      app.log.info(
+        `[Verify] Tenant ${user.tenantId} sincronizado a plan ${planCode} vía session ${session_id}`,
+      );
+
+      return res.send({
+        success: true,
+        data: { planCode: plan.code, status: sub.status },
       });
     },
   );
