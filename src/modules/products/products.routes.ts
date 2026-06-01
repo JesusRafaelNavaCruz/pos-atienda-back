@@ -29,6 +29,7 @@ const querySchema = z.object({
   limit: z.coerce.number().min(1).max(100).default(20),
   search: z.string().optional(),
   category_id: z.string().uuid().optional(),
+  supplier_id: z.string().uuid().optional(),
   low_stock: z.coerce.boolean().optional(),
   is_active: z.boolean().optional(),
   sortBy: z.enum(["name", "price", "stock", "created_at"]).default("name"),
@@ -92,6 +93,7 @@ export async function productsRoutes(app: FastifyInstance) {
             limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
             search: { type: "string", description: "Buscar por nombre, barcode o SKU" },
             category_id: { type: "string", format: "uuid" },
+            supplier_id: { type: "string", format: "uuid", description: "Filtrar por proveedor" },
             low_stock: { type: "boolean", description: "Filtrar productos con stock bajo" },
             is_active: { type: "boolean" },
             sortBy: {
@@ -132,6 +134,7 @@ export async function productsRoutes(app: FastifyInstance) {
         limit,
         search,
         category_id,
+        supplier_id,
         low_stock,
         is_active,
         sortBy,
@@ -150,11 +153,9 @@ export async function productsRoutes(app: FastifyInstance) {
         ];
       }
 
-      if (is_active !== undefined) {
-        where.is_active = is_active;
-      }
-
+      if (is_active !== undefined) where.is_active = is_active;
       if (category_id) where.category_id = category_id;
+      if (supplier_id) where.supplier_id = supplier_id;
 
       if (low_stock) {
         where.stock = { lte: prisma.product.fields.min_stock };
@@ -185,6 +186,81 @@ export async function productsRoutes(app: FastifyInstance) {
           total,
           totalPages: Math.ceil(total / limit),
         },
+      });
+    },
+  );
+
+  // GET /products/barcodes
+  app.get(
+    "/barcodes",
+    {
+      schema: {
+        tags: ["Products"],
+        summary: "Listar barcodes de productos",
+        description:
+          "Retorna id, nombre, barcode y SKU de todos los productos activos. " +
+          "Con `only_with_barcode=true` filtra solo los que tienen código asignado.",
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: "object",
+          properties: {
+            only_with_barcode: {
+              type: "boolean",
+              default: false,
+              description: "Si es true, excluye productos sin barcode",
+            },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id:      { type: "string" },
+                    name:    { type: "string" },
+                    sku:     { type: "string", nullable: true },
+                    barcode: { type: "string", nullable: true },
+                    unit:    { type: "string" },
+                    price:   { type: "number" },
+                  },
+                },
+              },
+              meta: {
+                type: "object",
+                properties: { total: { type: "integer" } },
+              },
+            },
+          },
+        },
+      },
+      preHandler: [authHook, requirePermission("products", "read")],
+    },
+    async (req, res) => {
+      const user = req.user as JwtPayload;
+      const { only_with_barcode } = z
+        .object({ only_with_barcode: z.coerce.boolean().default(false) })
+        .parse(req.query);
+
+      const where: any = { tenant_id: user.tenantId, is_active: true };
+      if (only_with_barcode) where.barcode = { not: null };
+
+      const products = await tenantStorage.run(user.tenantId, () =>
+        prisma.product.findMany({
+          where,
+          select: { id: true, name: true, sku: true, barcode: true, unit: true, price: true },
+          orderBy: { name: "asc" },
+        }),
+      );
+
+      return res.send({
+        success: true,
+        data: products,
+        meta: { total: products.length },
       });
     },
   );
@@ -464,7 +540,7 @@ export async function productsRoutes(app: FastifyInstance) {
         404: { description: "Producto no encontrado", ...errorResponse },
       },
     },
-    preHandler: [authHook, requirePermission('products', 'read')]
+    preHandler: [authHook, requirePermission('products', 'update')]
   }, async (req, res) => {
 
     const user = req.user as JwtPayload;

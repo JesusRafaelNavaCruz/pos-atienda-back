@@ -1,21 +1,27 @@
 import prisma, { tenantStorage } from "@/lib/prisma";
-import { requireFeature, requirePermission } from "@/middleware/authorize";
+import { requirePermission } from "@/middleware/authorize";
 import { JwtPayload } from "@/types";
 import { FastifyInstance } from "fastify";
 import z from "zod";
 
 const adjustSchema = z.object({
   product_id: z.string().uuid(),
-  delta: z.number().min(1),
+  // purchase: siempre positivo (entrada de mercancía)
+  // loss: positivo — el sistema lo niega internamente (salida por merma)
+  // adjustment: con signo — positivo = entrada, negativo = salida por conteo
+  delta: z.number().refine((v) => v !== 0, { message: "El delta no puede ser cero" }),
   type: z.enum(["purchase", "adjustment", "loss"]),
   reason: z.string().min(3),
   branch_id: z.string().uuid().optional(),
+  reference_id: z.string().uuid().optional(),
 });
 
 const querySchema = z.object({
   page: z.coerce.number().min(1).default(1),
   limit: z.coerce.number().min(1).max(100).default(20),
   product_id: z.string().uuid().optional(),
+  supplier_id: z.string().uuid().optional(),
+  branch_id: z.string().uuid().optional(),
   type: z.string().optional(),
   from: z.string().optional(),
   to: z.string().optional(),
@@ -60,6 +66,8 @@ export async function inventoryRoutes(app: FastifyInstance) {
             page: { type: "integer", minimum: 1, default: 1 },
             limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
             product_id: { type: "string", format: "uuid" },
+            supplier_id: { type: "string", format: "uuid", description: "Filtrar por proveedor del producto" },
+            branch_id: { type: "string", format: "uuid", description: "Filtrar por sucursal" },
             type: {
               type: "string",
               enum: ["sale", "purchase", "adjustment", "loss", "return"],
@@ -109,13 +117,15 @@ export async function inventoryRoutes(app: FastifyInstance) {
     },
     async (req, res) => {
       const user = req.user as JwtPayload;
-      const { page, limit, product_id, type, from, to } = querySchema.parse(
-        req.query,
-      );
+      const { page, limit, product_id, supplier_id, branch_id, type, from, to } =
+        querySchema.parse(req.query);
 
       const where: any = { tenant_id: user.tenantId };
       if (product_id) where.product_id = product_id;
+      if (branch_id) where.branch_id = branch_id;
       if (type) where.type = type;
+      // supplier_id: filtro indirecto a través del producto relacionado
+      if (supplier_id) where.product = { supplier_id };
       if (from || to) {
         where.created_at = {};
         if (from) where.created_at.gte = new Date(from);
@@ -127,7 +137,14 @@ export async function inventoryRoutes(app: FastifyInstance) {
           prisma.inventoryMovement.findMany({
             where,
             include: {
-              product: { select: { name: true, barcode: true, unit: true } },
+              product: {
+                select: {
+                  name: true,
+                  barcode: true,
+                  unit: true,
+                  supplier: { select: { id: true, name: true } },
+                },
+              },
               user: { select: { full_name: true } },
             },
             orderBy: { created_at: "desc" },
@@ -166,8 +183,8 @@ export async function inventoryRoutes(app: FastifyInstance) {
             product_id: { type: "string", format: "uuid" },
             delta: {
               type: "number",
-              minimum: 1,
-              description: "Cantidad a sumar al stock actual (siempre positivo)",
+              description:
+                "purchase: positivo (entrada). loss: positivo, el sistema resta. adjustment: con signo (+/-).",
             },
             type: {
               type: "string",
@@ -179,6 +196,11 @@ export async function inventoryRoutes(app: FastifyInstance) {
               description: "Descripción del motivo del ajuste",
             },
             branch_id: { type: "string", format: "uuid" },
+            reference_id: {
+              type: "string",
+              format: "uuid",
+              description: "ID de referencia (ej: orden de compra)",
+            },
           },
         },
         response: {
@@ -220,10 +242,29 @@ export async function inventoryRoutes(app: FastifyInstance) {
           if (!product) throw new Error("Producto no encontrado");
 
           const before = Number(product.stock);
-          const after = before + body.delta;
+
+          // Calcular el delta neto según el tipo:
+          // - purchase: siempre suma (el usuario envía positivo)
+          // - loss: siempre resta (el usuario envía positivo, negamos internamente)
+          // - adjustment: el usuario decide el signo (+entrada / -salida)
+          let netDelta: number;
+          if (body.type === "purchase") {
+            if (body.delta <= 0) throw new Error("Una compra debe tener cantidad positiva");
+            netDelta = body.delta;
+          } else if (body.type === "loss") {
+            if (body.delta <= 0) throw new Error("Una merma debe tener cantidad positiva");
+            netDelta = -body.delta;
+          } else {
+            // adjustment: se acepta cualquier signo
+            netDelta = body.delta;
+          }
+
+          const after = before + netDelta;
 
           if (after < 0)
-            throw new Error("El ajuste resultaría en stock negativo");
+            throw new Error(
+              `Stock insuficiente: hay ${before} unidades, no se pueden restar ${Math.abs(netDelta)}`,
+            );
 
           await tx.product.update({
             where: { id: body.product_id },
@@ -239,8 +280,9 @@ export async function inventoryRoutes(app: FastifyInstance) {
               type: body.type,
               quantity_before: before,
               quantity_after: after,
-              delta: body.delta,
+              delta: netDelta,
               reason: body.reason,
+              reference_id: body.reference_id,
             },
             include: { product: { select: { name: true, unit: true } } },
           });

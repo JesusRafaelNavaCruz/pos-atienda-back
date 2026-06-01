@@ -501,19 +501,21 @@ model Payment {
 }
 
 model PurchaseOrder {
-  id          String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id   String              @db.Uuid
-  supplier_id String              @db.Uuid
-  user_id     String?             @db.Uuid
-  branch_id   String?             @db.Uuid
-  folio       String              @db.VarChar(30)
-  status      PurchaseOrderStatus @default(draft)
-  total       Decimal             @default(0) @db.Decimal(12, 2)
-  notes       String?             @db.Text
-  expected_at DateTime?           @db.Date
-  received_at DateTime?           @db.Timestamptz()
-  created_at  DateTime            @default(now()) @db.Timestamptz()
-  updated_at  DateTime            @default(now()) @updatedAt @db.Timestamptz()
+  id           String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id    String              @db.Uuid
+  supplier_id  String              @db.Uuid
+  user_id      String?             @db.Uuid
+  branch_id    String?             @db.Uuid
+  folio        String              @db.VarChar(30)
+  status       PurchaseOrderStatus @default(draft)
+  total        Decimal             @default(0) @db.Decimal(12, 2)
+  notes        String?             @db.Text
+  expected_at  DateTime?           @db.Date
+  received_at  DateTime?           @db.Timestamptz()
+  // Token público para acceso del proveedor vía QR (sin autenticación JWT)
+  public_token String              @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  created_at   DateTime            @default(now()) @db.Timestamptz()
+  updated_at   DateTime            @default(now()) @updatedAt @db.Timestamptz()
   tenant   Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   supplier Supplier @relation(fields: [supplier_id], references: [id])
   user     User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
