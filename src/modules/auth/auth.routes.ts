@@ -1,5 +1,6 @@
 import { env } from "@/config/env";
 import prisma, { tenantStorage } from "@/lib/prisma";
+import { assignDefaultPermissions } from "@/lib/rbac";
 import { JwtPayload, RefreshTokenPayload } from "@/types";
 import { FastifyInstance } from "fastify";
 import z, { success } from "zod";
@@ -167,6 +168,13 @@ export async function authRoutes(app: FastifyInstance) {
     `;
 
       const { tenant_id, owner_user_id } = result[0];
+
+      // Asignar permisos predeterminados a los roles manager y cashier del nuevo tenant
+      try {
+        await assignDefaultPermissions(tenant_id)
+      } catch (e) {
+        app.log.warn({ err: e, tenant_id }, 'No se pudieron asignar permisos en onboarding')
+      }
 
       return res.code(201).send({
         success: true,

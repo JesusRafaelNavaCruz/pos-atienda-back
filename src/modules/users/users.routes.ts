@@ -7,6 +7,19 @@ import { requirePermission } from '../../middleware/authorize.js'
 import { env } from '../../config/env.js'
 import type { JwtPayload } from '../../types/index.js'
 
+const createRoleSchema = z.object({
+  name: z.string().min(2).max(100),
+  code: z.string().min(2).max(50).regex(/^[a-z0-9_]+$/, 'Solo minúsculas, números y _').optional(),
+})
+
+const updateRoleSchema = z.object({
+  name: z.string().min(2).max(100),
+})
+
+const setPermissionsSchema = z.object({
+  permission_ids: z.array(z.string().uuid()),
+})
+
 const createUserSchema = z.object({
   email:     z.string().email(),
   password:  z.string().min(8),
@@ -226,6 +239,428 @@ Los managers solo ven cajeros de su propia sucursal.`,
     )
 
     return res.send({ success: true, data: roles })
+  })
+
+  // GET /users/permissions — catálogo global de permisos disponibles
+  app.get('/permissions', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Catálogo de permisos',
+      description: 'Retorna todos los permisos disponibles para asignar a roles.',
+      security: [{ bearerAuth: [] }],
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  id:          { type: 'string' },
+                  resource:    { type: 'string' },
+                  action:      { type: 'string' },
+                  description: { type: 'string', nullable: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    preHandler: [authHook, requirePermission('users', 'read')],
+  }, async (req, res) => {
+    const permissions = await prisma.permission.findMany({
+      orderBy: [{ resource: 'asc' }, { action: 'asc' }],
+    })
+    return res.send({ success: true, data: permissions })
+  })
+
+  // POST /users/roles — crear rol personalizado (solo owner)
+  app.post('/roles', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Crear rol personalizado',
+      description: 'Crea un nuevo rol para el tenant. Solo el owner puede crear roles.',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['name'],
+        properties: {
+          name: { type: 'string', minLength: 2, maxLength: 100 },
+          code: { type: 'string', description: 'Opcional. Si se omite, se genera automáticamente del nombre.' },
+        },
+      },
+      response: {
+        201: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                id:         { type: 'string' },
+                name:       { type: 'string' },
+                code:       { type: 'string' },
+                is_system:  { type: 'boolean' },
+                created_at: { type: 'string', format: 'date-time' },
+              },
+            },
+          },
+        },
+        403: { ...errorResponse },
+        409: { ...errorResponse },
+      },
+    },
+    preHandler: [authHook],
+  }, async (req, res) => {
+    const user = req.user as JwtPayload
+
+    if (user.roleCode !== 'owner') {
+      return res.code(403).send({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Solo el owner puede gestionar roles' },
+      })
+    }
+
+    const body = createRoleSchema.parse(req.body)
+    const code = body.code ?? body.name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+
+    const existing = await tenantStorage.run(user.tenantId, () =>
+      prisma.role.findFirst({ where: { tenant_id: user.tenantId, code } }),
+    )
+    if (existing) {
+      return res.code(409).send({
+        success: false,
+        error: { code: 'CONFLICT', message: `Ya existe un rol con el código "${code}"` },
+      })
+    }
+
+    const role = await tenantStorage.run(user.tenantId, () =>
+      prisma.role.create({
+        data: { tenant_id: user.tenantId, name: body.name, code, is_system: false },
+      }),
+    )
+
+    return res.code(201).send({ success: true, data: role })
+  })
+
+  // PUT /users/roles/:roleId — renombrar rol (solo owner, no roles de sistema)
+  app.put('/roles/:roleId', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Actualizar nombre de rol',
+      description: 'Renombra un rol personalizado. No se pueden editar los roles del sistema (owner, manager, cashier).',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['roleId'],
+        properties: { roleId: { type: 'string', format: 'uuid' } },
+      },
+      body: {
+        type: 'object',
+        required: ['name'],
+        properties: { name: { type: 'string', minLength: 2, maxLength: 100 } },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                id:   { type: 'string' },
+                name: { type: 'string' },
+                code: { type: 'string' },
+              },
+            },
+          },
+        },
+        403: { ...errorResponse },
+        404: { ...errorResponse },
+      },
+    },
+    preHandler: [authHook],
+  }, async (req, res) => {
+    const user = req.user as JwtPayload
+    const { roleId } = req.params as { roleId: string }
+
+    if (user.roleCode !== 'owner') {
+      return res.code(403).send({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Solo el owner puede gestionar roles' },
+      })
+    }
+
+    const role = await tenantStorage.run(user.tenantId, () =>
+      prisma.role.findFirst({ where: { id: roleId, tenant_id: user.tenantId } }),
+    )
+    if (!role) {
+      return res.code(404).send({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Rol no encontrado' },
+      })
+    }
+    if (role.is_system) {
+      return res.code(403).send({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'No se pueden editar los roles del sistema' },
+      })
+    }
+
+    const { name } = updateRoleSchema.parse(req.body)
+    const updated = await tenantStorage.run(user.tenantId, () =>
+      prisma.role.update({ where: { id: roleId }, data: { name } }),
+    )
+
+    return res.send({ success: true, data: updated })
+  })
+
+  // DELETE /users/roles/:roleId — eliminar rol personalizado (solo owner)
+  app.delete('/roles/:roleId', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Eliminar rol personalizado',
+      description: 'Elimina un rol personalizado. No se pueden eliminar roles del sistema ni roles con usuarios asignados.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['roleId'],
+        properties: { roleId: { type: 'string', format: 'uuid' } },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: { type: 'object', properties: { message: { type: 'string' } } },
+          },
+        },
+        400: { ...errorResponse },
+        403: { ...errorResponse },
+        404: { ...errorResponse },
+      },
+    },
+    preHandler: [authHook],
+  }, async (req, res) => {
+    const user = req.user as JwtPayload
+    const { roleId } = req.params as { roleId: string }
+
+    if (user.roleCode !== 'owner') {
+      return res.code(403).send({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Solo el owner puede gestionar roles' },
+      })
+    }
+
+    const role = await tenantStorage.run(user.tenantId, () =>
+      prisma.role.findFirst({
+        where: { id: roleId, tenant_id: user.tenantId },
+        include: { _count: { select: { users: true } } },
+      }),
+    )
+    if (!role) {
+      return res.code(404).send({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Rol no encontrado' },
+      })
+    }
+    if (role.is_system) {
+      return res.code(403).send({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'No se pueden eliminar los roles del sistema' },
+      })
+    }
+    if (role._count.users > 0) {
+      return res.code(400).send({
+        success: false,
+        error: {
+          code: 'ROLE_IN_USE',
+          message: `El rol tiene ${role._count.users} usuario(s) asignado(s). Reasígnalos antes de eliminar el rol.`,
+        },
+      })
+    }
+
+    await tenantStorage.run(user.tenantId, () =>
+      prisma.role.delete({ where: { id: roleId } }),
+    )
+
+    return res.send({ success: true, data: { message: `Rol "${role.name}" eliminado` } })
+  })
+
+  // GET /users/roles/:roleId/permissions — permisos de un rol específico
+  app.get('/roles/:roleId/permissions', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Permisos de un rol',
+      description: 'Retorna los permisos asignados a un rol específico.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['roleId'],
+        properties: { roleId: { type: 'string', format: 'uuid' } },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                role: {
+                  type: 'object',
+                  properties: {
+                    id:   { type: 'string' },
+                    name: { type: 'string' },
+                    code: { type: 'string' },
+                  },
+                },
+                permissions: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      id:          { type: 'string' },
+                      resource:    { type: 'string' },
+                      action:      { type: 'string' },
+                      description: { type: 'string', nullable: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        404: { ...errorResponse },
+      },
+    },
+    preHandler: [authHook, requirePermission('users', 'read')],
+  }, async (req, res) => {
+    const user = req.user as JwtPayload
+    const { roleId } = req.params as { roleId: string }
+
+    const role = await tenantStorage.run(user.tenantId, () =>
+      prisma.role.findFirst({
+        where: { id: roleId, tenant_id: user.tenantId },
+        include: { permissions: { include: { permission: true } } },
+      }),
+    )
+    if (!role) {
+      return res.code(404).send({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Rol no encontrado' },
+      })
+    }
+
+    return res.send({
+      success: true,
+      data: {
+        role: { id: role.id, name: role.name, code: role.code },
+        permissions: role.permissions.map(rp => rp.permission),
+      },
+    })
+  })
+
+  // PUT /users/roles/:roleId/permissions — reemplazar permisos de un rol (solo owner)
+  app.put('/roles/:roleId/permissions', {
+    schema: {
+      tags: ['Users'],
+      summary: 'Asignar permisos a un rol',
+      description: 'Reemplaza todos los permisos del rol con la lista proporcionada. No aplica a roles del sistema.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['roleId'],
+        properties: { roleId: { type: 'string', format: 'uuid' } },
+      },
+      body: {
+        type: 'object',
+        required: ['permission_ids'],
+        properties: {
+          permission_ids: {
+            type: 'array',
+            items: { type: 'string', format: 'uuid' },
+            description: 'Lista de IDs de permisos a asignar (reemplaza los actuales)',
+          },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                role_id:          { type: 'string' },
+                permissions_set:  { type: 'integer' },
+              },
+            },
+          },
+        },
+        400: { ...errorResponse },
+        403: { ...errorResponse },
+        404: { ...errorResponse },
+      },
+    },
+    preHandler: [authHook],
+  }, async (req, res) => {
+    const user = req.user as JwtPayload
+    const { roleId } = req.params as { roleId: string }
+
+    if (user.roleCode !== 'owner') {
+      return res.code(403).send({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Solo el owner puede gestionar permisos de roles' },
+      })
+    }
+
+    const { permission_ids } = setPermissionsSchema.parse(req.body)
+
+    const role = await tenantStorage.run(user.tenantId, () =>
+      prisma.role.findFirst({ where: { id: roleId, tenant_id: user.tenantId } }),
+    )
+    if (!role) {
+      return res.code(404).send({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Rol no encontrado' },
+      })
+    }
+    if (role.is_system) {
+      return res.code(403).send({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'No se pueden modificar permisos de roles del sistema' },
+      })
+    }
+
+    // Validar que todos los IDs existen en el catálogo
+    const validPerms = await prisma.permission.findMany({
+      where: { id: { in: permission_ids } },
+      select: { id: true },
+    })
+    if (validPerms.length !== permission_ids.length) {
+      return res.code(400).send({
+        success: false,
+        error: { code: 'INVALID_PERMISSIONS', message: 'Uno o más IDs de permiso no son válidos' },
+      })
+    }
+
+    // Reemplazar permisos: borrar los actuales y crear los nuevos
+    await prisma.$transaction([
+      prisma.rolePermission.deleteMany({ where: { role_id: roleId } }),
+      prisma.rolePermission.createMany({
+        data: permission_ids.map(pid => ({ role_id: roleId, permission_id: pid })),
+        skipDuplicates: true,
+      }),
+    ])
+
+    return res.send({
+      success: true,
+      data: { role_id: roleId, permissions_set: permission_ids.length },
+    })
   })
 
   // GET /users/me/password — esta ruta debe declararse ANTES de /:id
