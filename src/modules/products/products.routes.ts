@@ -153,7 +153,10 @@ export async function productsRoutes(app: FastifyInstance) {
         ];
       }
 
-      if (is_active !== undefined) where.is_active = is_active;
+      if (is_active !== undefined) {
+        where.is_active = is_active;
+      }
+
       if (category_id) where.category_id = category_id;
       if (supplier_id) where.supplier_id = supplier_id;
 
