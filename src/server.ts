@@ -29,6 +29,8 @@ import { reportsRoutes } from "./modules/reports/reports.routes";
 import { adminAuthRoutes } from "./modules/admin/admin.auth.routes";
 import { adminRoutes } from "./modules/admin/admin.routes";
 import { adminPlansRoutes } from "./modules/admin/admin.plans.routes";
+import { mercadoPagoRoutes, mercadoPagoWebhookRoutes } from "./modules/mercadopago/mercadopago.routes";
+import { mercadoPagoOAuthCallbackRoutes, mercadoPagoOAuthRoutes } from "./modules/mercadopago/mercadopago-oauth.routes";
 
 // Create instance of Fastify
 const app = Fastify({
@@ -159,6 +161,10 @@ await app.register(stripeWebhooksRoutes, { prefix: "/webhooks" });
 await app.register(adminAuthRoutes, { prefix: `${prefix}/admin/auth` });
 await app.register(adminRoutes, { prefix: `${prefix}/admin` });
 await app.register(adminPlansRoutes, { prefix: `${prefix}/admin/plans` });
+await app.register(mercadoPagoRoutes, { prefix: `${prefix}/mercadopago` });
+await app.register(mercadoPagoOAuthRoutes, { prefix: `${prefix}/mercadopago/oauth` });
+await app.register(mercadoPagoOAuthCallbackRoutes, { prefix: `${prefix}/mercadopago/oauth` });
+await app.register(mercadoPagoWebhookRoutes, { prefix: "/webhooks" });
 
 // Arranque del servidor
 async function start() {

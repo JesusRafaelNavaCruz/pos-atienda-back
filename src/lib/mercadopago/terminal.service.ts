@@ -2,7 +2,11 @@ import { MPResponse, Terminal } from "@/types/mercadopago/types";
 import { getMPClient } from "./client";
 
 export class TerminalService {
-    private client = getMPClient();
+    private client: ReturnType<typeof getMPClient>;
+
+    constructor(accessToken: string) {
+        this.client = getMPClient(accessToken);
+    }
 
     // 1. Listar terminales de un comercio
     async listTerminals(params?: {

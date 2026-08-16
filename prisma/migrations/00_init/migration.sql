@@ -36,6 +36,9 @@ ALTER TABLE negocio.customers            ENABLE ROW LEVEL SECURITY;
 ALTER TABLE negocio.sales                ENABLE ROW LEVEL SECURITY;
 ALTER TABLE negocio.sale_items           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE negocio.payments             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE negocio.mercado_pago_terminals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE negocio.mercado_pago_connections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE negocio.mercado_pago_oauth_states ENABLE ROW LEVEL SECURITY;
 ALTER TABLE negocio.purchase_orders      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE negocio.purchase_order_items ENABLE ROW LEVEL SECURITY;
 
@@ -73,6 +76,13 @@ CREATE POLICY tenant_isolation ON negocio.sales
     USING (tenant_id = current_setting('app.tenant_id')::UUID);
 
 CREATE POLICY tenant_isolation ON negocio.payments
+    USING (tenant_id = current_setting('app.tenant_id')::UUID);
+
+CREATE POLICY tenant_isolation ON negocio.mercado_pago_terminals
+    USING (tenant_id = current_setting('app.tenant_id')::UUID);
+CREATE POLICY tenant_isolation ON negocio.mercado_pago_connections
+    USING (tenant_id = current_setting('app.tenant_id')::UUID);
+CREATE POLICY tenant_isolation ON negocio.mercado_pago_oauth_states
     USING (tenant_id = current_setting('app.tenant_id')::UUID);
 
 CREATE POLICY tenant_isolation ON negocio.purchase_orders

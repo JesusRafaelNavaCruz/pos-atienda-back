@@ -3,7 +3,11 @@ import { getMPClient } from "./client";
 
 export class OrderService {
 
-    private client = getMPClient();
+    private client: ReturnType<typeof getMPClient>;
+
+    constructor(accessToken: string) {
+        this.client = getMPClient(accessToken);
+    }
 
     async createOrder(data: CreateOrderDTO, idempotencyKey: string): Promise<MPResponse<Order>> {
         return this.client.post<Order>("/v1/orders", data, { idempotencyKey });

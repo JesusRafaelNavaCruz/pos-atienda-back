@@ -56,6 +56,9 @@ model Tenant {
   customers           Customer[]
   inventory_movements InventoryMovement[]
   payments            Payment[]
+  mercado_pago_terminals MercadoPagoTerminal[]
+  mercado_pago_connection MercadoPagoConnection?
+  mercado_pago_oauth_states MercadoPagoOAuthState[]
   products            Product[]
   purchase_orders     PurchaseOrder[]
   roles               Role[]
@@ -150,6 +153,7 @@ model Branch {
   purchase_orders     PurchaseOrder[]
   sales               Sale[]
   users               User[]
+  mercado_pago_terminals MercadoPagoTerminal[]
 
   @@map("branches")
   @@schema("negocio")
@@ -211,6 +215,7 @@ model User {
   purchase_orders     PurchaseOrder[]
   sales               Sale[]
   sessions            UserSession[]
+  mercado_pago_oauth_states MercadoPagoOAuthState[]
   branch              Branch?             @relation(fields: [branch_id], references: [id])
   role                Role                @relation(fields: [role_id], references: [id])
   tenant              Tenant              @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
@@ -413,6 +418,10 @@ model Payment {
   change_given       Decimal       @default(0) @db.Decimal(12, 2)
   stripe_payment_id  String?       @db.VarChar(200)
   stripe_terminal_id String?       @db.VarChar(200)
+  mercado_pago_order_id String?    @unique @db.VarChar(80)
+  mercado_pago_idempotency_key String? @unique @db.VarChar(80)
+  mercado_pago_terminal_id String? @db.VarChar(120)
+  mercado_pago_status String?      @db.VarChar(40)
   card_last4         String?       @db.Char(4)
   card_brand         String?       @db.VarChar(20)
   status             PaymentStatus @default(completed)
@@ -423,6 +432,62 @@ model Payment {
   @@index([sale_id], map: "idx_payments_sale")
   @@index([tenant_id], map: "idx_payments_tenant")
   @@map("payments")
+  @@schema("negocio")
+}
+
+/// Terminal Point autorizada para un tenant y una sucursal. Nunca se acepta una
+/// terminal arbitraria enviada por el cliente al iniciar un cobro.
+model MercadoPagoTerminal {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id   String   @db.Uuid
+  branch_id   String   @db.Uuid
+  terminal_id String   @unique @db.VarChar(120)
+  name        String?  @db.VarChar(200)
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  tenant      Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  branch      Branch   @relation(fields: [branch_id], references: [id], onDelete: Cascade)
+
+  @@unique([tenant_id, branch_id, terminal_id])
+  @@index([tenant_id, branch_id])
+  @@map("mercado_pago_terminals")
+  @@schema("negocio")
+}
+
+/// Credenciales OAuth cifradas de la cuenta Mercado Pago del comercio.
+model MercadoPagoConnection {
+  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id               String   @unique @db.Uuid
+  collector_id            String   @db.VarChar(80)
+  access_token_encrypted  String
+  refresh_token_encrypted String
+  token_expires_at        DateTime @db.Timestamptz(6)
+  is_active               Boolean  @default(true)
+  created_at              DateTime @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  tenant                  Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@map("mercado_pago_connections")
+  @@schema("negocio")
+}
+
+/// Estado de un solo uso para OAuth + PKCE. El state no contiene datos del tenant.
+model MercadoPagoOAuthState {
+  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id               String   @db.Uuid
+  user_id                 String   @db.Uuid
+  state_hash              String   @unique @db.VarChar(128)
+  code_verifier_encrypted String
+  expires_at              DateTime @db.Timestamptz(6)
+  consumed_at             DateTime? @db.Timestamptz(6)
+  created_at              DateTime @default(now()) @db.Timestamptz(6)
+  tenant                  Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  user                    User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([tenant_id])
+  @@index([expires_at])
+  @@map("mercado_pago_oauth_states")
   @@schema("negocio")
 }
 

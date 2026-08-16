@@ -33,6 +33,9 @@ export interface CreateOrderDTO {
       terminal_id: string; // ID de la terminal física
       print_on_terminal?: 'seller_ticket' | 'no_ticket'; // Control de impresión
     };
+    payment_method?: {
+      default_type?: 'credit_card' | 'debit_card' | 'qr';
+    };
   };
   expiration_time?: string; // Ej: "PT15M" (15 minutos)
   integration_data?: {

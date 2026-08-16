@@ -31,9 +31,9 @@ export class MercadoPagoClient {
     private readonly retryAttempts: number;
     private readonly retryDelay: number;
 
-    constructor () {
+    constructor (accessToken: string) {
         this.baseURL = envMP.MP_API_URL;
-        this.accessToken = envMP.MP_ACCESS_TOKEN;
+        this.accessToken = accessToken;
         this.timeout = envMP.MP_TIMEOUT;
         this.retryAttempts = envMP.MP_RETRY_ATTEMPTS;
         this.retryDelay = envMP.MP_RETRY_DELAY;
@@ -51,7 +51,7 @@ export class MercadoPagoClient {
         };
 
         if (idempotencyKey) {
-            headers['Idempotency-Key'] = idempotencyKey;
+            headers['X-Idempotency-Key'] = idempotencyKey;
         }
 
         if (additionalHeaders) {
@@ -125,7 +125,7 @@ export class MercadoPagoClient {
 
     private shouldRetry(error: MPError, attempt: number): boolean {
 
-        const retryableStatuses = [400, 429, 500, 502, 503, 504];
+        const retryableStatuses = [429, 500, 502, 503, 504];
         const isRetryable = retryableStatuses.includes(error.status) || error.status === 0;
         const hasRetriesLeft = attempt < this.retryAttempts;
 
@@ -233,13 +233,6 @@ export class MercadoPagoClient {
 
 }
 
-let mpClientInstance: MercadoPagoClient | null = null;
-
-export function getMPClient(): MercadoPagoClient {
-
-    if (!mpClientInstance) {
-        mpClientInstance = new MercadoPagoClient();
-    }
-
-    return mpClientInstance;
+export function getMPClient(accessToken: string): MercadoPagoClient {
+    return new MercadoPagoClient(accessToken);
 }

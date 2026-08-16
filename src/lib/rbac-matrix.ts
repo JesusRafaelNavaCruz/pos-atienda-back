@@ -32,6 +32,10 @@ export const ALL_PERMISSIONS: Array<[string, string, string]> = [
   ['sales',           'read',         'Ver ventas'],
   ['sales',           'create',       'Crear ventas'],
   ['sales',           'cancel',       'Cancelar ventas'],
+  ['mercadopago',     'read',         'Consultar terminales y cobros Mercado Pago'],
+  ['mercadopago',     'create',       'Iniciar cobros con terminal Mercado Pago'],
+  ['mercadopago',     'cancel',       'Cancelar cobros pendientes de Mercado Pago'],
+  ['mercadopago',     'refund',       'Reembolsar cobros de Mercado Pago'],
 ]
 
 export const MANAGER_PERMISSIONS: PermissionTuple[] = [
@@ -62,6 +66,10 @@ export const MANAGER_PERMISSIONS: PermissionTuple[] = [
   ['sales',           'read'],
   ['sales',           'create'],
   ['sales',           'cancel'],
+  ['mercadopago',     'read'],
+  ['mercadopago',     'create'],
+  ['mercadopago',     'cancel'],
+  ['mercadopago',     'refund'],
 ]
 
 export const CASHIER_PERMISSIONS: PermissionTuple[] = [
@@ -70,4 +78,6 @@ export const CASHIER_PERMISSIONS: PermissionTuple[] = [
   ['customers', 'create'],
   ['sales',     'read'],
   ['sales',     'create'],
+  ['mercadopago','read'],
+  ['mercadopago','create'],
 ]

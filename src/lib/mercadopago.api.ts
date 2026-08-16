@@ -1,21 +1,18 @@
-import { envMP } from "@/config/mercadopago.config";
+const MP_API = "https://api.mercadopago.com";
 
-const MP_API = envMP.MP_API_URL || "https://api.mercadopago.com";
-const TOKEN = envMP.MP_ACCESS_TOKEN;
-
-function headers(idempotencyKey?: string) {
+function headers(accessToken: string, idempotencyKey?: string) {
     const h: Record<string, string> = {
-        Autorization: `Bearer ${TOKEN}`,
+        Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json"
     }
     if (idempotencyKey) h["Idempotency-Key"] = idempotencyKey;
     return h;
 }
 
-export async function listTerminals() {
+export async function listTerminals(accessToken: string) {
     const res = await fetch(`${MP_API}/terminals/v1/list`, {
         method: "GET",
-        headers: headers(),
+        headers: headers(accessToken),
     });
     if (!res.ok) throw new Error(`MP Orders API ${res.status}`);
     return res.json();
@@ -23,10 +20,10 @@ export async function listTerminals() {
 
 
 
-export async function createOrder(payload: any, idempotencyKey?: string) {
+export async function createOrder(accessToken: string, payload: any, idempotencyKey?: string) {
     const res = await fetch(`${MP_API}/v1/orders`, {
         method: "POST",
-        headers: headers(idempotencyKey),
+        headers: headers(accessToken, idempotencyKey),
         body: JSON.stringify(payload)
     });
     if (!res.ok) throw new Error(`MP Orders API ${res.status}`);
