@@ -26,7 +26,7 @@ prisma.$use(async (params, next) => {
     const negocioModels = [
       'Branch', 'Role', 'User', 'UserSession', 'Supplier',
       'Category', 'Product', 'InventoryMovement', 'Customer',
-      'Sale', 'SaleItem', 'Payment', 'PurchaseOrder', 'PurchaseOrderItem',
+      'Sale', 'SaleItem', 'Payment', 'MercadoPagoTerminal', 'MercadoPagoConnection', 'MercadoPagoOAuthState', 'PurchaseOrder', 'PurchaseOrderItem',
     ]
 
     if (negocioModels.includes(params.model ?? '')) {

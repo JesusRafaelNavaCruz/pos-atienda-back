@@ -338,6 +338,7 @@ Si el cliente tiene asociado el campo customer_id, acumula puntos de lealtad (1 
         },
         400: { description: 'Stock insuficiente o datos inválidos', ...errorResponse },
         403: { description: 'Feature no disponible en el plan', ...errorResponse },
+        422: { description: 'Los pagos con tarjeta se inician con Mercado Pago', ...errorResponse },
       },
     },
     preHandler: [authHook, requirePermission('sales', 'create')],
@@ -348,20 +349,13 @@ Si el cliente tiene asociado el campo customer_id, acumula puntos de lealtad (1 
     // Verificar que pagos con tarjeta tienen el feature activo
     const hasCardPayment = body.payments.some((p) => p.method === 'card')
     if (hasCardPayment) {
-      const features = await prisma.$queryRaw<Array<{ feature_key: string; limit_value: string }>>`
-        SELECT feature_key, limit_value FROM plataforma.get_tenant_features(${user.tenantId}::uuid)
-        WHERE feature_key = 'card_payments'
-      `
-      const cardEnabled = features.find((f) => f.feature_key === 'card_payments')
-      if (!cardEnabled || cardEnabled.limit_value === 'false') {
-        return res.code(403).send({
+      return res.code(422).send({
           success: false,
           error: {
-            code: 'FEATURE_NOT_AVAILABLE',
-            message: "Los pagos con tarjeta no están disponibles en tu plan",
+            code: 'MERCADOPAGO_ORDER_REQUIRED',
+            message: 'Los pagos con tarjeta deben iniciarse con POST /mercadopago/orders y confirmarse por Mercado Pago.',
           },
         })
-      }
     }
 
     // Ejecutar en transacción

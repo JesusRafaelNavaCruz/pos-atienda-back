@@ -215,7 +215,7 @@ export async function customerRoutes(app: FastifyInstance) {
       preHandler: [
         authHook,
         featureHook,
-        requirePermission("customer", "read"),
+        requirePermission("customers", "read"),
       ],
     },
     async (req, res) => {
@@ -313,7 +313,7 @@ export async function customerRoutes(app: FastifyInstance) {
       preHandler: [
         authHook,
         featureHook,
-        requirePermission("customer", "create"),
+        requirePermission("customers", "create"),
       ],
     },
     async (req, res) => {
@@ -371,7 +371,7 @@ export async function customerRoutes(app: FastifyInstance) {
       preHandler: [
         authHook,
         featureHook,
-        requirePermission("customer", "update"),
+        requirePermission("customers", "update"),
       ],
     },
     async (req, res) => {
@@ -436,7 +436,7 @@ export async function customerRoutes(app: FastifyInstance) {
       preHandler: [
         authHook,
         featureHook,
-        requirePermission("customer", "create"),
+        requirePermission("customers", "create"),
       ],
     },
     async (req, res) => {

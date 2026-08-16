@@ -1,14 +1,3 @@
-// prisma/schema.prisma — alineado al 100% con pos_schema.sql
-// Cambios vs versión anterior:
-//   ✓ FKs cross-schema (negocio → plataforma.tenants) declaradas en todos los modelos
-//   ✓ Enums nativos: BillingInterval, TenantStatus, SubscriptionStatus,
-//                    ProductUnit, InventoryMovementType, SaleStatus,
-//                    PaymentMethod, PaymentStatus, PurchaseOrderStatus
-//   ✓ billing_events.payload → @db.JsonB
-//   ✓ user_sessions.ip_address → @db.Inet
-//   ✓ Índices nombrados en todas las tablas
-//   ✓ RLS, triggers, funciones y índices parciales → 01_rls_functions.sql
-
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["multiSchema"]
@@ -17,90 +6,8 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["plataforma", "negocio"]
+  schemas  = ["negocio", "plataforma"]
 }
-
-// ─── ENUMS ────────────────────────────────────────────────────────────────────
-
-enum BillingInterval {
-  monthly
-  yearly
-  @@schema("plataforma")
-}
-
-enum TenantStatus {
-  active
-  suspended
-  canceled
-  trial
-  @@schema("plataforma")
-}
-
-enum SubscriptionStatus {
-  trialing
-  active
-  past_due
-  canceled
-  unpaid
-  @@schema("plataforma")
-}
-
-enum ProductUnit {
-  pza
-  kg
-  g
-  lt
-  ml
-  caja
-  paq
-  rollo
-  par
-  @@schema("negocio")
-}
-
-enum InventoryMovementType {
-  sale
-  purchase
-  adjustment
-  return
-  loss
-  initial
-  @@schema("negocio")
-}
-
-enum SaleStatus {
-  pending
-  completed
-  canceled
-  returned
-  @@schema("negocio")
-}
-
-enum PaymentMethod {
-  cash
-  card
-  transfer
-  credit
-  @@schema("negocio")
-}
-
-enum PaymentStatus {
-  pending
-  completed
-  failed
-  refunded
-  @@schema("negocio")
-}
-
-enum PurchaseOrderStatus {
-  draft
-  sent
-  received
-  canceled
-  @@schema("negocio")
-}
-
-// ─── SCHEMA: plataforma ───────────────────────────────────────────────────────
 
 model Plan {
   id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -112,10 +19,11 @@ model Plan {
   max_users        Int             @default(2)
   trial_days       Int             @default(14)
   is_active        Boolean         @default(true)
-  created_at       DateTime        @default(now()) @db.Timestamptz()
-  updated_at       DateTime        @default(now()) @updatedAt @db.Timestamptz()
+  created_at       DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
   features         PlanFeature[]
   subscriptions    Subscription[]
+
   @@map("plans")
   @@schema("plataforma")
 }
@@ -126,36 +34,41 @@ model PlanFeature {
   feature_key String @db.VarChar(100)
   limit_value String @default("true") @db.VarChar(50)
   plan        Plan   @relation(fields: [plan_id], references: [id], onDelete: Cascade)
+
   @@unique([plan_id, feature_key])
-  @@index([plan_id], name: "idx_plan_features_plan")
+  @@index([plan_id], map: "idx_plan_features_plan")
   @@map("plan_features")
   @@schema("plataforma")
 }
 
 model Tenant {
-  id         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name       String       @db.VarChar(200)
-  slug       String       @unique @db.VarChar(100)
-  status     TenantStatus @default(active)
-  timezone   String       @default("America/Mexico_City") @db.VarChar(60)
-  country    String       @default("MX") @db.Char(2)
-  logo_url   String?      @db.Text
-  created_at DateTime     @default(now()) @db.Timestamptz()
-  updated_at DateTime     @default(now()) @updatedAt @db.Timestamptz()
-  subscriptions       Subscription[]
-  billing_events      BillingEvent[]
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                String              @db.VarChar(200)
+  slug                String              @unique @db.VarChar(100)
+  status              TenantStatus        @default(active)
+  timezone            String              @default("America/Mexico_City") @db.VarChar(60)
+  country             String              @default("MX") @db.Char(2)
+  logo_url            String?
+  created_at          DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
   branches            Branch[]
-  roles               Role[]
-  users               User[]
-  user_sessions       UserSession[]
-  suppliers           Supplier[]
   categories          Category[]
-  products            Product[]
-  inventory_movements InventoryMovement[]
   customers           Customer[]
-  sales               Sale[]
+  inventory_movements InventoryMovement[]
   payments            Payment[]
+  mercado_pago_terminals MercadoPagoTerminal[]
+  mercado_pago_connection MercadoPagoConnection?
+  mercado_pago_oauth_states MercadoPagoOAuthState[]
+  products            Product[]
   purchase_orders     PurchaseOrder[]
+  roles               Role[]
+  sales               Sale[]
+  suppliers           Supplier[]
+  user_sessions       UserSession[]
+  users               User[]
+  billing_events      BillingEvent[]
+  subscriptions       Subscription[]
+
   @@map("tenants")
   @@schema("plataforma")
 }
@@ -167,16 +80,17 @@ model Subscription {
   stripe_subscription_id String?            @unique @db.VarChar(200)
   stripe_customer_id     String?            @db.VarChar(200)
   status                 SubscriptionStatus @default(trialing)
-  current_period_start   DateTime?          @db.Timestamptz()
-  current_period_end     DateTime?          @db.Timestamptz()
-  trial_ends_at          DateTime?          @db.Timestamptz()
-  canceled_at            DateTime?          @db.Timestamptz()
-  created_at             DateTime           @default(now()) @db.Timestamptz()
-  updated_at             DateTime           @default(now()) @updatedAt @db.Timestamptz()
-  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  plan   Plan   @relation(fields: [plan_id], references: [id])
-  @@index([tenant_id], name: "idx_subscriptions_tenant")
-  @@index([status],    name: "idx_subscriptions_status")
+  current_period_start   DateTime?          @db.Timestamptz(6)
+  current_period_end     DateTime?          @db.Timestamptz(6)
+  trial_ends_at          DateTime?          @db.Timestamptz(6)
+  canceled_at            DateTime?          @db.Timestamptz(6)
+  created_at             DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime           @default(now()) @updatedAt @db.Timestamptz(6)
+  plan                   Plan               @relation(fields: [plan_id], references: [id])
+  tenant                 Tenant             @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@index([tenant_id], map: "idx_subscriptions_tenant")
+  @@index([status], map: "idx_subscriptions_status")
   @@map("subscriptions")
   @@schema("plataforma")
 }
@@ -186,121 +100,129 @@ model BillingEvent {
   tenant_id       String?  @db.Uuid
   stripe_event_id String   @unique @db.VarChar(200)
   event_type      String   @db.VarChar(100)
-  payload         Json     @default("{}") @db.JsonB
-  processed_at    DateTime @default(now()) @db.Timestamptz()
-  tenant Tenant? @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
-  @@index([tenant_id],  name: "idx_billing_events_tenant")
-  @@index([event_type], name: "idx_billing_events_type")
+  payload         Json     @default("{}")
+  processed_at    DateTime @default(now()) @db.Timestamptz(6)
+  tenant          Tenant?  @relation(fields: [tenant_id], references: [id])
+
+  @@index([tenant_id], map: "idx_billing_events_tenant")
+  @@index([event_type], map: "idx_billing_events_type")
   @@map("billing_events")
   @@schema("plataforma")
 }
 
 model AdminUser {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email         String    @unique @db.VarChar(255)
-  password_hash String    @db.Text
-  full_name     String    @db.VarChar(200)
-  is_active     Boolean   @default(true)
-  last_login_at DateTime? @db.Timestamptz()
-  created_at    DateTime  @default(now()) @db.Timestamptz()
-  updated_at    DateTime  @default(now()) @updatedAt @db.Timestamptz()
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email         String         @unique @db.VarChar(255)
+  password_hash String
+  full_name     String         @db.VarChar(200)
+  is_active     Boolean        @default(true)
+  last_login_at DateTime?      @db.Timestamptz(6)
+  created_at    DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime       @default(now()) @updatedAt @db.Timestamptz(6)
   sessions      AdminSession[]
+
   @@map("admin_users")
   @@schema("plataforma")
 }
 
 model AdminSession {
-  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  admin_user_id      String   @db.Uuid
-  refresh_token_hash String   @unique @db.Text
-  expires_at         DateTime @db.Timestamptz()
-  created_at         DateTime @default(now()) @db.Timestamptz()
-  admin_user AdminUser @relation(fields: [admin_user_id], references: [id], onDelete: Cascade)
-  @@index([admin_user_id], name: "idx_admin_sessions_user")
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admin_user_id      String    @db.Uuid
+  refresh_token_hash String    @unique
+  expires_at         DateTime  @db.Timestamptz(6)
+  created_at         DateTime  @default(now()) @db.Timestamptz(6)
+  admin_user         AdminUser @relation(fields: [admin_user_id], references: [id], onDelete: Cascade)
+
+  @@index([admin_user_id], map: "idx_admin_sessions_user")
   @@map("admin_sessions")
   @@schema("plataforma")
 }
 
-// ─── SCHEMA: negocio ──────────────────────────────────────────────────────────
-
 model Branch {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id  String   @db.Uuid
-  name       String   @db.VarChar(200)
-  address    String?  @db.Text
-  phone      String?  @db.VarChar(30)
-  email      String?  @db.VarChar(200)
-  is_active  Boolean  @default(true)
-  created_at DateTime @default(now()) @db.Timestamptz()
-  updated_at DateTime @default(now()) @updatedAt @db.Timestamptz()
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id           String              @db.Uuid
+  name                String              @db.VarChar(200)
+  address             String?
+  phone               String?             @db.VarChar(30)
+  email               String?             @db.VarChar(200)
+  is_active           Boolean             @default(true)
+  created_at          DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
   tenant              Tenant              @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  users               User[]
-  sales               Sale[]
   inventory_movements InventoryMovement[]
   purchase_orders     PurchaseOrder[]
+  sales               Sale[]
+  users               User[]
+  mercado_pago_terminals MercadoPagoTerminal[]
+
   @@map("branches")
   @@schema("negocio")
 }
 
 model Role {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id  String   @db.Uuid
-  name       String   @db.VarChar(100)
-  code       String   @db.VarChar(50)
-  is_system  Boolean  @default(false)
-  created_at DateTime @default(now()) @db.Timestamptz()
+  id          String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id   String           @db.Uuid
+  name        String           @db.VarChar(100)
+  code        String           @db.VarChar(50)
+  is_system   Boolean          @default(false)
+  created_at  DateTime         @default(now()) @db.Timestamptz(6)
+  permissions RolePermission[]
   tenant      Tenant           @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   users       User[]
-  permissions RolePermission[]
+
   @@unique([tenant_id, code])
   @@map("roles")
   @@schema("negocio")
 }
 
 model Permission {
-  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  resource    String  @db.VarChar(80)
-  action      String  @db.VarChar(40)
-  description String? @db.VarChar(255)
-  roles RolePermission[]
+  id          String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  resource    String           @db.VarChar(80)
+  action      String           @db.VarChar(40)
+  description String?          @db.VarChar(255)
+  roles       RolePermission[]
+
   @@unique([resource, action])
   @@map("permissions")
   @@schema("negocio")
 }
 
 model RolePermission {
-  role_id       String @db.Uuid
-  permission_id String @db.Uuid
-  role       Role       @relation(fields: [role_id], references: [id], onDelete: Cascade)
-  permission Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+  role_id       String     @db.Uuid
+  permission_id String     @db.Uuid
+  permission    Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+  role          Role       @relation(fields: [role_id], references: [id], onDelete: Cascade)
+
   @@id([role_id, permission_id])
   @@map("role_permissions")
   @@schema("negocio")
 }
 
 model User {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id     String    @db.Uuid
-  role_id       String    @db.Uuid
-  branch_id     String?   @db.Uuid
-  email         String    @db.VarChar(255)
-  password_hash String    @db.Text
-  full_name     String    @db.VarChar(200)
-  pin_hash      String?   @db.Text
-  is_active     Boolean   @default(true)
-  last_login_at DateTime? @db.Timestamptz()
-  created_at    DateTime  @default(now()) @db.Timestamptz()
-  updated_at    DateTime  @default(now()) @updatedAt @db.Timestamptz()
-  tenant  Tenant  @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  role    Role    @relation(fields: [role_id], references: [id])
-  branch  Branch? @relation(fields: [branch_id], references: [id], onDelete: SetNull)
-  sessions            UserSession[]
-  sales               Sale[]
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id           String              @db.Uuid
+  role_id             String              @db.Uuid
+  branch_id           String?             @db.Uuid
+  email               String              @db.VarChar(255)
+  password_hash       String
+  full_name           String              @db.VarChar(200)
+  pin_hash            String?
+  is_active           Boolean             @default(true)
+  last_login_at       DateTime?           @db.Timestamptz(6)
+  created_at          DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
   inventory_movements InventoryMovement[]
   purchase_orders     PurchaseOrder[]
+  sales               Sale[]
+  sessions            UserSession[]
+  mercado_pago_oauth_states MercadoPagoOAuthState[]
+  branch              Branch?             @relation(fields: [branch_id], references: [id])
+  role                Role                @relation(fields: [role_id], references: [id])
+  tenant              Tenant              @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
   @@unique([tenant_id, email])
-  @@index([tenant_id],        name: "idx_users_tenant")
-  @@index([tenant_id, email], name: "idx_users_email")
+  @@index([tenant_id], map: "idx_users_tenant")
+  @@index([tenant_id, email], map: "idx_users_email")
   @@map("users")
   @@schema("negocio")
 }
@@ -309,82 +231,86 @@ model UserSession {
   id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id            String   @db.Uuid
   tenant_id          String   @db.Uuid
-  refresh_token_hash String   @unique @db.Text
+  refresh_token_hash String   @unique
   ip_address         String?  @db.Inet
-  user_agent         String?  @db.Text
-  expires_at         DateTime @db.Timestamptz()
-  created_at         DateTime @default(now()) @db.Timestamptz()
-  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  user   User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  @@index([user_id],            name: "idx_sessions_user")
-  @@index([refresh_token_hash], name: "idx_sessions_token")
+  user_agent         String?
+  expires_at         DateTime @db.Timestamptz(6)
+  created_at         DateTime @default(now()) @db.Timestamptz(6)
+  tenant             Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  user               User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id], map: "idx_sessions_user")
+  @@index([refresh_token_hash], map: "idx_sessions_token")
   @@map("user_sessions")
   @@schema("negocio")
 }
 
 model Category {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id  String   @db.Uuid
-  name       String   @db.VarChar(100)
-  color      String?  @default("#6B7280") @db.VarChar(7)
-  is_active  Boolean  @default(true)
-  created_at DateTime @default(now()) @db.Timestamptz()
-  tenant   Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  products Product[]
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id  String    @db.Uuid
+  name       String    @db.VarChar(100)
+  color      String?   @default("#6B7280") @db.VarChar(7)
+  is_active  Boolean   @default(true)
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  tenant     Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  products   Product[]
+
   @@unique([tenant_id, name])
   @@map("categories")
   @@schema("negocio")
 }
 
 model Supplier {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id    String   @db.Uuid
-  name         String   @db.VarChar(200)
-  contact_name String?  @db.VarChar(200)
-  phone        String?  @db.VarChar(30)
-  email        String?  @db.VarChar(255)
-  rfc          String?  @db.VarChar(13)
-  address      String?  @db.Text
-  notes        String?  @db.Text
-  is_active    Boolean  @default(true)
-  created_at   DateTime @default(now()) @db.Timestamptz()
-  updated_at   DateTime @default(now()) @updatedAt @db.Timestamptz()
-  tenant          Tenant          @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id       String          @db.Uuid
+  name            String          @db.VarChar(200)
+  contact_name    String?         @db.VarChar(200)
+  phone           String?         @db.VarChar(30)
+  email           String?         @db.VarChar(255)
+  rfc             String?         @db.VarChar(13)
+  address         String?
+  notes           String?
+  is_active       Boolean         @default(true)
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
   products        Product[]
   purchase_orders PurchaseOrder[]
-  @@index([tenant_id], name: "idx_suppliers_tenant")
+  tenant          Tenant          @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@index([tenant_id], map: "idx_suppliers_tenant")
   @@map("suppliers")
   @@schema("negocio")
 }
 
 model Product {
-  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id      String      @db.Uuid
-  category_id    String?     @db.Uuid
-  supplier_id    String?     @db.Uuid
-  barcode        String?     @db.VarChar(100)
-  sku            String?     @db.VarChar(100)
-  name           String      @db.VarChar(300)
-  description    String?     @db.Text
-  unit           ProductUnit @default(pza)
-  price          Decimal     @default(0) @db.Decimal(12, 2)
-  cost           Decimal     @default(0) @db.Decimal(12, 2)
-  stock          Decimal     @default(0) @db.Decimal(12, 3)
-  min_stock      Decimal     @default(0) @db.Decimal(12, 3)
-  sold_by_weight Boolean     @default(false)
-  image_url      String?     @db.Text
-  is_active      Boolean     @default(true)
-  created_at     DateTime    @default(now()) @db.Timestamptz()
-  updated_at     DateTime    @default(now()) @updatedAt @db.Timestamptz()
-  tenant   Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  category Category? @relation(fields: [category_id], references: [id], onDelete: SetNull)
-  supplier Supplier? @relation(fields: [supplier_id], references: [id], onDelete: SetNull)
-  sale_items           SaleItem[]
+  id                   String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id            String              @db.Uuid
+  category_id          String?             @db.Uuid
+  supplier_id          String?             @db.Uuid
+  barcode              String?             @db.VarChar(100)
+  sku                  String?             @db.VarChar(100)
+  name                 String              @db.VarChar(300)
+  description          String?
+  unit                 ProductUnit         @default(pza)
+  price                Decimal             @default(0) @db.Decimal(12, 2)
+  cost                 Decimal             @default(0) @db.Decimal(12, 2)
+  stock                Decimal             @default(0) @db.Decimal(12, 3)
+  min_stock            Decimal             @default(0) @db.Decimal(12, 3)
+  sold_by_weight       Boolean             @default(false)
+  image_url            String?
+  is_active            Boolean             @default(true)
+  created_at           DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
   inventory_movements  InventoryMovement[]
+  category             Category?           @relation(fields: [category_id], references: [id])
+  supplier             Supplier?           @relation(fields: [supplier_id], references: [id])
+  tenant               Tenant              @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   purchase_order_items PurchaseOrderItem[]
+  sale_items           SaleItem[]
+
   @@unique([tenant_id, barcode])
-  @@index([tenant_id],          name: "idx_products_tenant")
-  @@index([tenant_id, barcode], name: "idx_products_barcode")
+  @@index([tenant_id], map: "idx_products_tenant")
+  @@index([tenant_id, barcode], map: "idx_products_barcode")
   @@map("products")
   @@schema("negocio")
 }
@@ -399,15 +325,16 @@ model InventoryMovement {
   quantity_before Decimal               @db.Decimal(12, 3)
   quantity_after  Decimal               @db.Decimal(12, 3)
   delta           Decimal               @db.Decimal(12, 3)
-  reason          String?               @db.Text
+  reason          String?
   reference_id    String?               @db.Uuid
-  created_at      DateTime              @default(now()) @db.Timestamptz()
-  tenant  Tenant  @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [product_id], references: [id])
-  user    User?   @relation(fields: [user_id], references: [id], onDelete: SetNull)
-  branch  Branch? @relation(fields: [branch_id], references: [id], onDelete: SetNull)
-  @@index([product_id],            name: "idx_inventory_product")
-  @@index([tenant_id, created_at], name: "idx_inventory_tenant")
+  created_at      DateTime              @default(now()) @db.Timestamptz(6)
+  branch          Branch?               @relation(fields: [branch_id], references: [id])
+  product         Product               @relation(fields: [product_id], references: [id])
+  tenant          Tenant                @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  user            User?                 @relation(fields: [user_id], references: [id])
+
+  @@index([product_id], map: "idx_inventory_product")
+  @@index([tenant_id, created_at], map: "idx_inventory_tenant")
   @@map("inventory_movements")
   @@schema("negocio")
 }
@@ -419,17 +346,18 @@ model Customer {
   phone          String?  @db.VarChar(30)
   email          String?  @db.VarChar(255)
   rfc            String?  @db.VarChar(13)
-  address        String?  @db.Text
+  address        String?
   credit_limit   Decimal  @default(0) @db.Decimal(12, 2)
   credit_balance Decimal  @default(0) @db.Decimal(12, 2)
   loyalty_points Int      @default(0)
-  notes          String?  @db.Text
+  notes          String?
   is_active      Boolean  @default(true)
-  created_at     DateTime @default(now()) @db.Timestamptz()
-  updated_at     DateTime @default(now()) @updatedAt @db.Timestamptz()
-  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  sales  Sale[]
-  @@index([tenant_id], name: "idx_customers_tenant")
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  tenant         Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  sales          Sale[]
+
+  @@index([tenant_id], map: "idx_customers_tenant")
   @@map("customers")
   @@schema("negocio")
 }
@@ -445,20 +373,21 @@ model Sale {
   discount    Decimal    @default(0) @db.Decimal(12, 2)
   total       Decimal    @default(0) @db.Decimal(12, 2)
   status      SaleStatus @default(completed)
-  notes       String?    @db.Text
-  created_at  DateTime   @default(now()) @db.Timestamptz()
-  updated_at  DateTime   @default(now()) @updatedAt @db.Timestamptz()
-  tenant   Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  branch   Branch    @relation(fields: [branch_id], references: [id])
-  user     User      @relation(fields: [user_id], references: [id])
-  customer Customer? @relation(fields: [customer_id], references: [id], onDelete: SetNull)
-  items    SaleItem[]
-  payments Payment[]
+  notes       String?
+  created_at  DateTime   @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime   @default(now()) @updatedAt @db.Timestamptz(6)
+  payments    Payment[]
+  items       SaleItem[]
+  branch      Branch     @relation(fields: [branch_id], references: [id])
+  customer    Customer?  @relation(fields: [customer_id], references: [id])
+  tenant      Tenant     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  user        User       @relation(fields: [user_id], references: [id])
+
   @@unique([tenant_id, folio])
-  @@index([tenant_id],             name: "idx_sales_tenant")
-  @@index([branch_id],             name: "idx_sales_branch")
-  @@index([user_id],               name: "idx_sales_user")
-  @@index([tenant_id, created_at], name: "idx_sales_created_at")
+  @@index([tenant_id], map: "idx_sales_tenant")
+  @@index([branch_id], map: "idx_sales_branch")
+  @@index([user_id], map: "idx_sales_user")
+  @@index([tenant_id, created_at], map: "idx_sales_created_at")
   @@map("sales")
   @@schema("negocio")
 }
@@ -471,10 +400,11 @@ model SaleItem {
   unit_price Decimal @db.Decimal(12, 2)
   discount   Decimal @default(0) @db.Decimal(12, 2)
   subtotal   Decimal @db.Decimal(12, 2)
-  sale    Sale    @relation(fields: [sale_id], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [product_id], references: [id])
-  @@index([sale_id],    name: "idx_sale_items_sale")
-  @@index([product_id], name: "idx_sale_items_product")
+  product    Product @relation(fields: [product_id], references: [id])
+  sale       Sale    @relation(fields: [sale_id], references: [id], onDelete: Cascade)
+
+  @@index([sale_id], map: "idx_sale_items_sale")
+  @@index([product_id], map: "idx_sale_items_product")
   @@map("sale_items")
   @@schema("negocio")
 }
@@ -488,52 +418,203 @@ model Payment {
   change_given       Decimal       @default(0) @db.Decimal(12, 2)
   stripe_payment_id  String?       @db.VarChar(200)
   stripe_terminal_id String?       @db.VarChar(200)
+  mercado_pago_order_id String?    @unique @db.VarChar(80)
+  mercado_pago_idempotency_key String? @unique @db.VarChar(80)
+  mercado_pago_terminal_id String? @db.VarChar(120)
+  mercado_pago_status String?      @db.VarChar(40)
   card_last4         String?       @db.Char(4)
   card_brand         String?       @db.VarChar(20)
   status             PaymentStatus @default(completed)
-  created_at         DateTime      @default(now()) @db.Timestamptz()
-  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  sale   Sale   @relation(fields: [sale_id], references: [id], onDelete: Cascade)
-  @@index([sale_id],   name: "idx_payments_sale")
-  @@index([tenant_id], name: "idx_payments_tenant")
+  created_at         DateTime      @default(now()) @db.Timestamptz(6)
+  sale               Sale          @relation(fields: [sale_id], references: [id], onDelete: Cascade)
+  tenant             Tenant        @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@index([sale_id], map: "idx_payments_sale")
+  @@index([tenant_id], map: "idx_payments_tenant")
   @@map("payments")
   @@schema("negocio")
 }
 
+/// Terminal Point autorizada para un tenant y una sucursal. Nunca se acepta una
+/// terminal arbitraria enviada por el cliente al iniciar un cobro.
+model MercadoPagoTerminal {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id   String   @db.Uuid
+  branch_id   String   @db.Uuid
+  terminal_id String   @unique @db.VarChar(120)
+  name        String?  @db.VarChar(200)
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  tenant      Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  branch      Branch   @relation(fields: [branch_id], references: [id], onDelete: Cascade)
+
+  @@unique([tenant_id, branch_id, terminal_id])
+  @@index([tenant_id, branch_id])
+  @@map("mercado_pago_terminals")
+  @@schema("negocio")
+}
+
+/// Credenciales OAuth cifradas de la cuenta Mercado Pago del comercio.
+model MercadoPagoConnection {
+  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id               String   @unique @db.Uuid
+  collector_id            String   @db.VarChar(80)
+  access_token_encrypted  String
+  refresh_token_encrypted String
+  token_expires_at        DateTime @db.Timestamptz(6)
+  is_active               Boolean  @default(true)
+  created_at              DateTime @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  tenant                  Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@map("mercado_pago_connections")
+  @@schema("negocio")
+}
+
+/// Estado de un solo uso para OAuth + PKCE. El state no contiene datos del tenant.
+model MercadoPagoOAuthState {
+  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id               String   @db.Uuid
+  user_id                 String   @db.Uuid
+  state_hash              String   @unique @db.VarChar(128)
+  code_verifier_encrypted String
+  expires_at              DateTime @db.Timestamptz(6)
+  consumed_at             DateTime? @db.Timestamptz(6)
+  created_at              DateTime @default(now()) @db.Timestamptz(6)
+  tenant                  Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  user                    User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([tenant_id])
+  @@index([expires_at])
+  @@map("mercado_pago_oauth_states")
+  @@schema("negocio")
+}
+
 model PurchaseOrder {
-  id          String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id   String              @db.Uuid
-  supplier_id String              @db.Uuid
-  user_id     String?             @db.Uuid
-  branch_id   String?             @db.Uuid
-  folio       String              @db.VarChar(30)
-  status      PurchaseOrderStatus @default(draft)
-  total       Decimal             @default(0) @db.Decimal(12, 2)
-  notes       String?             @db.Text
-  expected_at DateTime?           @db.Date
-  received_at DateTime?           @db.Timestamptz()
-  created_at  DateTime            @default(now()) @db.Timestamptz()
-  updated_at  DateTime            @default(now()) @updatedAt @db.Timestamptz()
-  tenant   Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  supplier Supplier @relation(fields: [supplier_id], references: [id])
-  user     User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
-  branch   Branch?  @relation(fields: [branch_id], references: [id], onDelete: SetNull)
-  items    PurchaseOrderItem[]
+  id           String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id    String              @db.Uuid
+  supplier_id  String              @db.Uuid
+  user_id      String?             @db.Uuid
+  branch_id    String?             @db.Uuid
+  folio        String              @db.VarChar(30)
+  status       PurchaseOrderStatus @default(draft)
+  total        Decimal             @default(0) @db.Decimal(12, 2)
+  notes        String?
+  expected_at  DateTime?           @db.Date
+  received_at  DateTime?           @db.Timestamptz(6)
+  created_at   DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
+  public_token String              @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  items        PurchaseOrderItem[]
+  branch       Branch?             @relation(fields: [branch_id], references: [id])
+  supplier     Supplier            @relation(fields: [supplier_id], references: [id])
+  tenant       Tenant              @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  user         User?               @relation(fields: [user_id], references: [id])
+
   @@unique([tenant_id, folio])
-  @@index([tenant_id], name: "idx_purchase_orders_tenant")
+  @@index([tenant_id], map: "idx_purchase_orders_tenant")
   @@map("purchase_orders")
   @@schema("negocio")
 }
 
 model PurchaseOrderItem {
-  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  order_id   String  @db.Uuid
-  product_id String  @db.Uuid
-  quantity   Decimal @db.Decimal(12, 3)
-  unit_cost  Decimal @db.Decimal(12, 2)
-  subtotal   Decimal @db.Decimal(12, 2)
-  order   PurchaseOrder @relation(fields: [order_id], references: [id], onDelete: Cascade)
-  product Product       @relation(fields: [product_id], references: [id])
+  id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id   String        @db.Uuid
+  product_id String        @db.Uuid
+  quantity   Decimal       @db.Decimal(12, 3)
+  unit_cost  Decimal       @db.Decimal(12, 2)
+  subtotal   Decimal       @db.Decimal(12, 2)
+  order      PurchaseOrder @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product    Product       @relation(fields: [product_id], references: [id])
+
   @@map("purchase_order_items")
+  @@schema("negocio")
+}
+
+enum BillingInterval {
+  monthly
+  yearly
+
+  @@schema("plataforma")
+}
+
+enum TenantStatus {
+  active
+  suspended
+  canceled
+  trial
+
+  @@schema("plataforma")
+}
+
+enum SubscriptionStatus {
+  trialing
+  active
+  past_due
+  canceled
+  unpaid
+
+  @@schema("plataforma")
+}
+
+enum ProductUnit {
+  pza
+  kg
+  g
+  lt
+  ml
+  caja
+  paq
+  rollo
+  par
+
+  @@schema("negocio")
+}
+
+enum InventoryMovementType {
+  sale
+  purchase
+  adjustment
+  return
+  loss
+  initial
+
+  @@schema("negocio")
+}
+
+enum SaleStatus {
+  pending
+  completed
+  canceled
+  returned
+
+  @@schema("negocio")
+}
+
+enum PaymentMethod {
+  cash
+  card
+  transfer
+  credit
+
+  @@schema("negocio")
+}
+
+enum PaymentStatus {
+  pending
+  completed
+  failed
+  refunded
+
+  @@schema("negocio")
+}
+
+enum PurchaseOrderStatus {
+  draft
+  sent
+  received
+  canceled
+
   @@schema("negocio")
 }

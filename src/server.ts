@@ -20,12 +20,17 @@ import { inventoryRoutes } from "./modules/inventory/inventory.routes";
 import { productsRoutes } from "./modules/products/products.routes";
 import { usersRoutes } from "./modules/users/users.routes";
 import { suppliersRoutes } from "./modules/suppliers/suppliers.routes";
+import { purchaseOrdersRoutes } from "./modules/suppliers/purchase-orders.routes";
+import { purchaseOrdersPublicRoutes } from "./modules/suppliers/purchase-orders.public.routes";
 import { salesRoutes } from "./modules/sales/sales.routes";
 import { subscriptionsRoutes } from "./modules/tenants/tenants.routes";
 import { stripeWebhooksRoutes } from "./modules/tenants/stripe-webhooks.routes";
 import { reportsRoutes } from "./modules/reports/reports.routes";
 import { adminAuthRoutes } from "./modules/admin/admin.auth.routes";
 import { adminRoutes } from "./modules/admin/admin.routes";
+import { adminPlansRoutes } from "./modules/admin/admin.plans.routes";
+import { mercadoPagoRoutes, mercadoPagoWebhookRoutes } from "./modules/mercadopago/mercadopago.routes";
+import { mercadoPagoOAuthCallbackRoutes, mercadoPagoOAuthRoutes } from "./modules/mercadopago/mercadopago-oauth.routes";
 
 // Create instance of Fastify
 const app = Fastify({
@@ -146,6 +151,8 @@ await app.register(productsRoutes, { prefix: `${prefix}/products` });
 await app.register(salesRoutes, { prefix: `${prefix}/sales` });
 await app.register(inventoryRoutes, { prefix: `${prefix}/inventory` });
 await app.register(suppliersRoutes, { prefix: `${prefix}/suppliers` });
+await app.register(purchaseOrdersRoutes, { prefix: `${prefix}/purchase-orders` });
+await app.register(purchaseOrdersPublicRoutes, { prefix: "/public/purchase-orders" });
 await app.register(customerRoutes, { prefix: `${prefix}/customers` });
 await app.register(usersRoutes, { prefix: `${prefix}/users` });
 await app.register(reportsRoutes, { prefix: `${prefix}/reports` });
@@ -153,6 +160,11 @@ await app.register(subscriptionsRoutes, { prefix: `${prefix}/subscriptions` });
 await app.register(stripeWebhooksRoutes, { prefix: "/webhooks" });
 await app.register(adminAuthRoutes, { prefix: `${prefix}/admin/auth` });
 await app.register(adminRoutes, { prefix: `${prefix}/admin` });
+await app.register(adminPlansRoutes, { prefix: `${prefix}/admin/plans` });
+await app.register(mercadoPagoRoutes, { prefix: `${prefix}/mercadopago` });
+await app.register(mercadoPagoOAuthRoutes, { prefix: `${prefix}/mercadopago/oauth` });
+await app.register(mercadoPagoOAuthCallbackRoutes, { prefix: `${prefix}/mercadopago/oauth` });
+await app.register(mercadoPagoWebhookRoutes, { prefix: "/webhooks" });
 
 // Arranque del servidor
 async function start() {
