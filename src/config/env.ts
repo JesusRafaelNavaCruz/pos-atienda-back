@@ -31,6 +31,16 @@ const envSchema = z.object({
   RATE_LIMIT_MAX:     z.coerce.number().default(100),
   RATE_LIMIT_WINDOW:  z.string().default('1 minute'),
   FEATURE_CACHE_TTL:  z.coerce.number().default(300),
+
+  // Frontend (links dentro de los correos)
+  FRONTEND_URL: z.string().url().default('http://localhost:5173'),
+
+  // Resend (envío de correos transaccionales)
+  RESEND_API_KEY:   z.string().startsWith('re_'),
+  RESEND_FROM_EMAIL: z.string().email(),
+  RESEND_TEMPLATE_ID_WELCOME: z.string().min(1),
+  RESEND_TEMPLATE_ID_VERIFICATION: z.string().min(1),
+  RESEND_TEMPLATE_ID_PASSWORD_RESET: z.string().min(1),
 })
 
 const parsed = envSchema.safeParse(process.env)

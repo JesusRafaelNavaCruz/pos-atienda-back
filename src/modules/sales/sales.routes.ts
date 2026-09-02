@@ -382,7 +382,7 @@ Si el cliente tiene asociado el campo customer_id, acumula puntos de lealtad (1 
           const product = productMap.get(item.product_id)!
           const currentStock = Number(product.stock)
 
-          if (!product.sold_by_weight && currentStock < item.quantity) {
+          if (currentStock < item.quantity) {
             throw new Error(
               `Stock insuficiente para "${product.name}". Disponible: ${currentStock}`,
             )

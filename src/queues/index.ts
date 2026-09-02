@@ -2,17 +2,22 @@
 // Definición de colas BullMQ para tareas asíncronas:
 //   - stock-alerts: notificaciones de productos con stock bajo
 //   - report-generation: generación de reportes pesados en background
+//   - emails: correos transaccionales (bienvenida, verificación, etc.)
 
 import { Queue, Worker, QueueEvents } from 'bullmq'
 import type { FastifyInstance } from 'fastify'
 import { getRedis } from '../lib/redis.js'
 import prisma, { tenantStorage } from '../lib/prisma.js'
+import { EMAIL_CONFIG } from '../config/email.config.js'
+import { EmailService } from '../modules/email/email.service.js'
+import type { WelcomeEmailData } from '../modules/email/email.types.js'
 
 // Definición de colas
 const connection = { url: process.env.REDIS_URL ?? 'redis://localhost:6379' }
 
 export const stockAlertsQueue = new Queue('stock-alerts', { connection })
 export const reportQueue       = new Queue('report-generation', { connection })
+export const emailQueue        = new Queue('emails', { connection })
 
 // Tipos de jobs
 
@@ -31,6 +36,11 @@ export interface ReportJob {
   type:     'sales' | 'inventory' | 'cash-cut'
   params:   Record<string, string>
 }
+
+// Job de correo: 'type' decide qué template/subject usa el worker.
+// Agregar aquí cada nuevo tipo de correo (verification, password-reset, ...).
+export type EmailJob =
+  | { type: 'welcome'; to: string; data: WelcomeEmailData }
 
 // Worker: alertas de stock bajo
 
@@ -64,6 +74,70 @@ export function createStockAlertsWorker() {
   })
 
   return worker
+}
+
+// Worker: correos transaccionales
+
+export function createEmailWorker() {
+  const emailService = EmailService.getInstance()
+
+  const worker = new Worker<EmailJob>(
+    'emails',
+    async (job) => {
+      switch (job.data.type) {
+        case 'welcome': {
+          const { to, data } = job.data
+          const loginUrl = `${EMAIL_CONFIG.baseUrl}/login`
+
+          const result = await emailService.sendEmail({
+            to,
+            templateId: EMAIL_CONFIG.templates.WELCOME,
+            templateData: {
+              name:       data.name,
+              tenantName: data.tenantName,
+              ownerName:  data.ownerName,
+              ownerEmail: data.ownerEmail,
+              planCode:   data.planCode,
+              loginUrl,
+            },
+          })
+
+          if (!result.success) throw result.error ?? new Error('Fallo desconocido al enviar correo')
+          return result
+        }
+        default:
+          // Nunca debería pasar mientras EmailJob solo tenga 'welcome';
+          // sirve de guarda cuando se agreguen más tipos de correo.
+          throw new Error(`Tipo de correo no soportado: ${(job.data as { type: string }).type}`)
+      }
+    },
+    { connection, concurrency: 5 },
+  )
+
+  worker.on('completed', (job) => {
+    console.log(`[Queue] Correo enviado: ${job.id} (${job.data.type})`)
+  })
+
+  worker.on('failed', (job, err) => {
+    console.error(`[Queue] Error enviando correo ${job?.id}:`, err.message)
+  })
+
+  return worker
+}
+
+// Helper: encolar correo de bienvenida tras el registro de un tenant
+
+export async function enqueueWelcomeEmail(to: string, data: WelcomeEmailData) {
+  await emailQueue.add(
+    'welcome',
+    { type: 'welcome', to, data },
+    {
+      attempts:   3,
+      backoff:    { type: 'exponential', delay: 2000 },
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    },
+  )
 }
 
 // Helper: encolar alerta de stock tras una venta
@@ -110,11 +184,14 @@ export async function enqueueStockAlertsForSale(
 
 export async function registerQueues(app: FastifyInstance) {
   const stockWorker = createStockAlertsWorker()
+  const emailWorker  = createEmailWorker()
 
   app.addHook('onClose', async () => {
     await stockWorker.close()
+    await emailWorker.close()
     await stockAlertsQueue.close()
     await reportQueue.close()
+    await emailQueue.close()
   })
 
   app.log.info('[Queue] Workers de BullMQ iniciados')
